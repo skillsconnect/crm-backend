@@ -86,7 +86,7 @@ export async function processEmailLog(message) {
                 res = await axios.post('https://api.brevo.com/v3/smtp/email', postData, {
                     headers: {
                         'Accept': 'application/json',
-                        'api-key': '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',
+                        'api-key': process.env.BREVO_MAIL_KEY,
                         'content-type': 'application/json'
                     }
                 });
@@ -100,7 +100,7 @@ export async function processEmailLog(message) {
                 res = await axios.post('https://api.zeptomail.in/v1.1/email', payload, {
                     headers: {
                         'accept': 'application/json',
-                        'authorization': 'Zoho-enczapikey PHtE6r0IFOzoiTV++xlT5vS5Q8LyZ4ku9b9gKQARuYgTC6ALTU1T/41+xmDh/h55V/dDF/KZmoJrsbqY4L3UJDm4YWZPXWqyqK3sx/VYSPOZsbq6x00asVQcdEDUUofmc99r1CDVvt7eNA==',
+                        'authorization': process.env.ZEPTO_MAIL_KEY,
                         'content-type': 'application/json'
                     }
                 });

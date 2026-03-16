@@ -162,17 +162,7 @@ async function sendMailViaBrevo({ emailFrom, emailTo, emailCc, subject, mailBody
   };
 
   try {
-    // console.log('Sending email via Brevo:', { to: emailTo, subject });
 
-    // const res = await axios.post('https://api.brevo.com/v3/smtp/email', postData, {
-    //   headers: {
-    //     'Accept': 'application/json',
-    //     'api-key': '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',
-    //     'content-type': 'application/json'
-    //   }
-    // });
-    // console.log("helo");
-    // insert data in logs
     const logData = {
       status: "Pending",
       sending_started: new Date(),
