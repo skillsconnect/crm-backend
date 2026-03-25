@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 const VERSION = process.env.WEBSITE_VERSION;
 const { default: commonModel } = await import(
-  `../../../Modules/Models/Website/MySQL/commonModel/commonModel.js`
+  `../../modules/models/mysql/commonModel/commonModel.js`
 );
 import axios from 'axios';
 import { sendMail,sendInstantMail } from './mail.helper.js';

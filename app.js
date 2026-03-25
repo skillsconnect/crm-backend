@@ -14,7 +14,7 @@ const Website_ver = process.env.WEBSITE_VERSION;
 
 if (!Website_ver) throw new Error("CODE_VERSION missing in .env");
 
-import WebsiteRoutes from './routes/index.js';
+import CRMRoutes from './routes/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,21 +46,22 @@ const limiter = rateLimit({
   windowMs: 1000, // 1 second window
   max: 50,        // 20 requests per second
 
-  // skip: (req) => {
-  //   const body = req.body || {};
-  //   const query = req.query || {};
+  skip: (req) => {
+    const body = req.body || {};
+    const query = req.query || {};
 
-  //   const isPagination =
-  //     body.page !== undefined ||
-  //     body.limit !== undefined ||
-  //     body.offset !== undefined ||
-  //     query.page !== undefined ||
-  //     query.limit !== undefined ||
-  //     query.offset !== undefined;
+    const isPagination =
+      body.page !== undefined ||
+      body.limit !== undefined ||
+      body.offset !== undefined ||
+      query.page !== undefined ||
+      query.limit !== undefined ||
+      query.offset !== undefined;
 
-  //   // Skip ONLY if pagination + request from frontend server IP
-  //   return isPagination && FRONTEND_SERVER_IPS.includes(req.ip);
-  // },
+    // Skip ONLY if pagination + request from frontend server IP
+    // return isPagination && FRONTEND_SERVER_IPS.includes(req.ip);
+    return isPagination;
+  },
 
   message: {
     status: 429,
@@ -88,7 +89,7 @@ consumerSendMailLog("send_email_instant_log_queue", "notifications_exchange", "e
 consumerExcelToExport("send_email_excel_export_queue", "notifications_exchange", "excel_export_notification");
 // }, 2000);
 
-app.use("/website/", WebsiteRoutes);
+app.use("/crm", CRMRoutes);
 
 // WebSocket + HTTP server
 const server = http.createServer(app);
