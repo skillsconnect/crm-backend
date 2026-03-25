@@ -1,11 +1,17 @@
 import CommonModel from '../../../modules/models/mysql/commonModel/commonModel.js';
 import { slugify } from '../../../helpers/V1/core_helper.js';
 
+// ==================== TEMPLATE MASTER ====================
+
 export const getAllTemplates = async (req, res) => {
     try {
-        const { status } = req.query;
+        const { status, template_name, email_subject } = req.query;
         let condition = "1=1";
+        
         if (status === 'active') condition = "status = 'Active'";
+        if (status && status !== 'active') condition = `status = '${status}'`;
+        if (template_name) condition += ` AND template_name LIKE '%${template_name}%'`;
+        if (email_subject) condition += ` AND email_subject LIKE '%${email_subject}%'`;
 
         const templates = await CommonModel.getData(
             'crm_email_campaign_template',
@@ -270,9 +276,13 @@ export const deleteTemplate = async (req, res) => {
 
 export const getAllSenders = async (req, res) => {
     try {
-        const { status } = req.query;
+        const { status, sender_name, email } = req.query;
         let condition = "1=1";
+        
         if (status === 'active') condition = "status = 'Active'";
+        if (status && status !== 'active') condition = `status = '${status}'`;
+        if (sender_name) condition += ` AND sender_name LIKE '%${sender_name}%'`;
+        if (email) condition += ` AND email LIKE '%${email}%'`;
 
         const senders = await CommonModel.getData(
             'crm_sender_emails',
@@ -327,7 +337,14 @@ export const getSenderById = async (req, res) => {
 
 export const createSender = async (req, res) => {
     try {
-        const { email, daily_limit, status } = req.body;
+        const { sender_name, email, daily_limit, status } = req.body;
+
+        if (!sender_name || !sender_name.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Sender name is required"
+            });
+        }
 
         if (!email || !email.trim()) {
             return res.status(400).json({
@@ -358,6 +375,7 @@ export const createSender = async (req, res) => {
         }
 
         const insertData = {
+            sender_name: sender_name.trim(),
             email: email.trim(),
             daily_limit: daily_limit || 500,
             status: status || 'Active',
@@ -397,7 +415,7 @@ export const createSender = async (req, res) => {
 export const updateSender = async (req, res) => {
     try {
         const { senderId } = req.params;
-        const { email, daily_limit, status, email_details } = req.body;
+        const { sender_name, email, daily_limit, status, email_details } = req.body;
 
         const existing = await CommonModel.getData(
             'crm_sender_emails',
@@ -413,6 +431,10 @@ export const updateSender = async (req, res) => {
         }
 
         const updateData = { updated_at: new Date() };
+
+        if (sender_name && sender_name.trim()) {
+            updateData.sender_name = sender_name.trim();
+        }
 
         if (email && email.trim()) {
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -532,9 +554,12 @@ export const deleteSender = async (req, res) => {
 
 export const getAllMailingLists = async (req, res) => {
     try {
-        const { status } = req.query;
+        const { status, name } = req.query;
         let condition = "1=1";
+        
         if (status === 'active') condition = "status = 'Active'";
+        if (status && status !== 'active') condition = `status = '${status}'`;
+        if (name) condition += ` AND name LIKE '%${name}%'`;
 
         const lists = await CommonModel.getData(
             'crm_mailing_list',
@@ -807,11 +832,23 @@ export const deleteMailingList = async (req, res) => {
 export const getRecipientsByList = async (req, res) => {
     try {
         const { listId } = req.params;
+        const { name, email, mail_status } = req.query;
+        
+        let condition = `mailing_list_id = ${listId}`;
+        if (name && name.trim()) {
+            condition += ` AND (name LIKE '%${name}%' OR last_name LIKE '%${name}%')`;
+        }
+        if (email && email.trim()) {
+            condition += ` AND email LIKE '%${email}%'`;
+        }
+        if (mail_status && mail_status.trim()) {
+            condition += ` AND mail_status = '${mail_status}'`;
+        }
 
         const recipients = await CommonModel.getData(
             'crm_marketing_email_recipient',
             '*',
-            `mailing_list_id = ${listId}`,
+            condition,
             'id',
             'desc'
         );
@@ -1028,14 +1065,177 @@ export const deleteRecipients = async (req, res) => {
     }
 };
 
+// modules/controllers/V1/email-campaign.js
+
+// Add this import at the top
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Configure multer for file upload
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadDir = path.join(__dirname, '../../../../uploads/tmp');
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + '-' + file.originalname);
+    }
+});
+
+const upload = multer({ 
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only CSV files are allowed'), false);
+        }
+    },
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB
+    }
+});
+
+// modules/controllers/V1/email-campaign.js
+
+
+
+export const importCSV = async (req, res) => {
+    console.log("=== IMPORT CSV START ===");
+    
+    try {
+        const { list_id } = req.body;
+        
+        if (!list_id) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "List ID is required" 
+            });
+        }
+        
+        if (!req.parsedCSV || req.parsedCSV.length === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "No valid data found in CSV" 
+            });
+        }
+        
+        let inserted = 0;
+        let skipped = 0;
+        const errors = [];
+        
+        for (let i = 0; i < req.parsedCSV.length; i++) {
+            const row = req.parsedCSV[i];
+            const email = row.email || row.Email || row.EMAIL;
+            const rowNum = i + 2;
+            
+            if (!email) {
+                skipped++;
+                errors.push(`Row ${rowNum}: Missing email`);
+                continue;
+            }
+            
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                skipped++;
+                errors.push(`Row ${rowNum}: Invalid email format - ${email}`);
+                continue;
+            }
+            
+            // Check if email already exists
+            const existing = await CommonModel.getData(
+                'crm_marketing_email_recipient',
+                'id',
+                `email = '${email}' AND mailing_list_id = ${list_id}`
+            );
+            
+            if (existing && existing.length > 0) {
+                skipped++;
+                errors.push(`Row ${rowNum}: Email already exists - ${email}`);
+                continue;
+            }
+            
+            // Insert recipient
+            const insertData = {
+                name: row.name || row.first_name || '',
+                last_name: row.last_name || '',
+                email: email,
+                mailing_list_id: list_id,
+                mail_status: 'pending',
+                created_at: new Date(),
+                updated_at: new Date(),
+                created_by: req.user?.id || 1,
+                updated_by: req.user?.id || 1
+            };
+            
+            try {
+                const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
+                if (result) {
+                    inserted++;
+                } else {
+                    skipped++;
+                    errors.push(`Row ${rowNum}: Insert failed`);
+                }
+            } catch (dbError) {
+                // Check if it's a duplicate error
+                if (dbError.code === 'ER_DUP_ENTRY') {
+                    skipped++;
+                    errors.push(`Row ${rowNum}: Email already exists - ${email}`);
+                } else {
+                    skipped++;
+                    errors.push(`Row ${rowNum}: ${dbError.message}`);
+                }
+            }
+        }
+        
+        // Clean up file using fs from import
+        if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        
+        res.json({
+            success: true,
+            message: `${inserted} imported, ${skipped} skipped`,
+            data: { inserted, skipped, errors: errors.slice(0, 10) }
+        });
+        
+    } catch (error) {
+        console.error("Import error:", error);
+        
+        // Clean up file on error
+        if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        
+        res.status(500).json({ 
+            success: false, 
+            message: "Import failed: " + error.message 
+        });
+    }
+};
+
 // ==================== CAMPAIGN MANAGEMENT ====================
 
 export const getAllCampaigns = async (req, res) => {
     try {
+        const { name, status } = req.query;
+        let condition = "1=1";
+        
+        if (name) condition += ` AND name LIKE '%${name}%'`;
+        if (status) condition += ` AND status = '${status}'`;
+
         const campaigns = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            '1=1',
+            condition,
             'id',
             'desc'
         );
@@ -1066,12 +1266,14 @@ export const getAllCampaigns = async (req, res) => {
                     campaign.template_names = '';
                 }
 
-                const mailingLists = await CommonModel.getData(
-                    'crm_campaign_mailing_lists',
-                    'COUNT(*) as list_count',
-                    `campaign_id = ${campaign.id}`
+                // Get mailing list names for this campaign
+                const campaignLists = await CommonModel.joinFetch(
+                    ["crm_campaign_mailing_lists as cml", ["ml.name"]],
+                    [["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]],
+                    `cml.campaign_id = ${campaign.id}`
                 );
-                campaign.mailing_list_count = mailingLists?.[0]?.list_count || 0;
+                campaign.mailing_list_names = campaignLists?.map(cl => cl.name) || [];
+                campaign.mailing_list_count = campaign.mailing_list_names.length;
             }
         }
 
@@ -1115,6 +1317,14 @@ export const getCampaignById = async (req, res) => {
         campaignData.mail_from_ids = campaignData.sender_email_id?.split(',') || [];
         campaignData.mail_list_ids = mailingLists?.map(ml => ml.mailing_list_id) || [];
         campaignData.mail_template_ids = campaignData.template_id?.split(',') || [];
+
+        // Get mailing list names
+        const mailingListNames = await CommonModel.getData(
+            'crm_mailing_list',
+            'name',
+            `id IN (${campaignData.mail_list_ids.join(',') || 0})`
+        );
+        campaignData.mailing_list_names = mailingListNames?.map(ml => ml.name) || [];
 
         res.status(200).json({
             success: true,
@@ -1389,10 +1599,15 @@ export const getCampaignMailingLists = async (req, res) => {
 
 export const getCampaignLogs = async (req, res) => {
     try {
-        const { campaignId, page, limit } = req.query;
+        const { campaignId, page, limit, campaign_name, recipient_email, status, date_from, date_to } = req.query;
 
         let condition = "1=1";
         if (campaignId) condition = `l.campaign_id = ${campaignId}`;
+        if (campaign_name) condition += ` AND c.name LIKE '%${campaign_name}%'`;
+        if (recipient_email) condition += ` AND (l.recipient_email LIKE '%${recipient_email}%' OR r.email LIKE '%${recipient_email}%')`;
+        if (status) condition += ` AND l.status = '${status}'`;
+        if (date_from) condition += ` AND DATE(l.sent_at) >= '${date_from}'`;
+        if (date_to) condition += ` AND DATE(l.sent_at) <= '${date_to}'`;
 
         if (page && limit) {
             const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -1456,7 +1671,7 @@ export const getCampaignFormData = async (req, res) => {
     try {
         const senders = await CommonModel.getData(
             'crm_sender_emails',
-            'id, email',
+            'id, sender_name, email',
             "status = 'Active'"
         );
 

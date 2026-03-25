@@ -27,8 +27,11 @@ import {
     getCampaignMailingLists,
     getCampaignLogs,
     getCampaignFormData,
-    getDashboardStats
+    getDashboardStats,
+    importCSV
 } from '../../modules/controllers/V1/email-campaign.js';
+
+import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
 
 const router = Router();
 
@@ -54,6 +57,7 @@ router.get('/mailing-lists/:listId/recipients', getRecipientsByList);
 router.post('/mailing-lists/:listId/recipients', addRecipient);
 router.put('/recipients/:recipientId', updateRecipient);
 router.delete('/recipients', deleteRecipients);
+router.post('/import', uploadCSV, parseCSV, validateCSV, importCSV);
 
 router.get('/campaigns', getAllCampaigns);
 router.get('/campaigns/:campaignId', getCampaignById);
