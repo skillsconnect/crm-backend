@@ -1597,17 +1597,68 @@ export const getCampaignMailingLists = async (req, res) => {
 
 // ==================== CAMPAIGN LOGS ====================
 
+// modules/controllers/V1/email-campaign.js
+
+// modules/controllers/V1/email-campaign.js
+
 export const getCampaignLogs = async (req, res) => {
     try {
-        const { campaignId, page, limit, campaign_name, recipient_email, status, date_from, date_to } = req.query;
+        const { 
+            campaignId, 
+            page, 
+            limit, 
+            campaign_name, 
+            recipient_email, 
+            status, 
+            date_from, 
+            date_to 
+        } = req.query;
 
         let condition = "1=1";
-        if (campaignId) condition = `l.campaign_id = ${campaignId}`;
-        if (campaign_name) condition += ` AND c.name LIKE '%${campaign_name}%'`;
-        if (recipient_email) condition += ` AND (l.recipient_email LIKE '%${recipient_email}%' OR r.email LIKE '%${recipient_email}%')`;
-        if (status) condition += ` AND l.status = '${status}'`;
-        if (date_from) condition += ` AND DATE(l.sent_at) >= '${date_from}'`;
-        if (date_to) condition += ` AND DATE(l.sent_at) <= '${date_to}'`;
+        
+        // Build conditions for join query (using table aliases)
+        let joinCondition = "1=1";
+        
+        if (campaignId) {
+            joinCondition += ` AND l.campaign_id = ${campaignId}`;
+        }
+        if (campaign_name && campaign_name.trim()) {
+            joinCondition += ` AND c.name LIKE '%${campaign_name}%'`;
+        }
+        if (recipient_email && recipient_email.trim()) {
+            joinCondition += ` AND (l.recipient_email LIKE '%${recipient_email}%' OR r.email LIKE '%${recipient_email}%')`;
+        }
+        if (status && status.trim()) {
+            joinCondition += ` AND l.status = '${status}'`;
+        }
+        if (date_from && date_from.trim()) {
+            joinCondition += ` AND DATE(l.sent_at) >= '${date_from}'`;
+        }
+        if (date_to && date_to.trim()) {
+            joinCondition += ` AND DATE(l.sent_at) <= '${date_to}'`;
+        }
+
+        // For total count query (no table alias)
+        let countCondition = "1=1";
+        
+        if (campaignId) {
+            countCondition += ` AND campaign_id = ${campaignId}`;
+        }
+        if (status && status.trim()) {
+            countCondition += ` AND status = '${status}'`;
+        }
+        if (date_from && date_from.trim()) {
+            countCondition += ` AND DATE(sent_at) >= '${date_from}'`;
+        }
+        if (date_to && date_to.trim()) {
+            countCondition += ` AND DATE(sent_at) <= '${date_to}'`;
+        }
+        if (recipient_email && recipient_email.trim()) {
+            countCondition += ` AND recipient_email LIKE '%${recipient_email}%'`;
+        }
+
+        // console.log("Join Condition:", joinCondition);
+        // console.log("Count Condition:", countCondition);
 
         if (page && limit) {
             const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -1620,13 +1671,18 @@ export const getCampaignLogs = async (req, res) => {
                     ["LEFT", "crm_campaigns as c", "l.campaign_id = c.id"],
                     ["LEFT", "crm_marketing_email_recipient as r", "l.recipient_id = r.id"]
                 ],
-                condition,
+                joinCondition,
                 { "l.id": "desc" },
                 "",
                 { offset, rows: parseInt(limit) }
             );
 
-            const totalResult = await CommonModel.getData('crm_campaign_email_logs', 'COUNT(*) as total', condition);
+            // Use countCondition without table alias
+            const totalResult = await CommonModel.getData(
+                'crm_campaign_email_logs', 
+                'COUNT(*) as total', 
+                countCondition
+            );
 
             res.status(200).json({
                 success: true,
@@ -1647,7 +1703,7 @@ export const getCampaignLogs = async (req, res) => {
                     ["LEFT", "crm_campaigns as c", "l.campaign_id = c.id"],
                     ["LEFT", "crm_marketing_email_recipient as r", "l.recipient_id = r.id"]
                 ],
-                condition,
+                joinCondition,
                 { "l.id": "desc" }
             );
 
@@ -1657,7 +1713,7 @@ export const getCampaignLogs = async (req, res) => {
             });
         }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in getCampaignLogs:', error);
         res.status(500).json({
             success: false,
             message: "Internal Server Error"
