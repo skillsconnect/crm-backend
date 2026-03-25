@@ -4,10 +4,10 @@ const environment = process.env.NODE_ENV || 'development';
 
 const VERSION = process.env.WEBSITE_VERSION;
 const { default: commonModel } = await import(
-  `../../../Modules/Models/Website/MySQL/commonModel/commonModel.js`
+  `../../modules/models/mysql/commonModel/commonModel.js`
 
 );
-const { producerMessage } = await import(`../../../rabbitmq/producer.js`);
+const { producerMessage } = await import(`../../rabbitmq/producer.js`);
 
 const provider = 'brevo';
 // const provider = 'zepto';
