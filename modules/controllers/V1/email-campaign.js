@@ -1,5 +1,6 @@
 import CommonModel from '../../../modules/models/mysql/commonModel/commonModel.js';
 import { slugify } from '../../../helpers/V1/core_helper.js';
+import fs from 'fs';
 
 // ==================== TEMPLATE MASTER ====================
 
@@ -889,7 +890,7 @@ export const addRecipient = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_marketing_email_recipient',
             'id',
-            `email = '${email}'`
+            `email = '${email}' AND mailing_list_id = ${listId}`
         );
 
         if (existing && existing.length > 0) {
@@ -1065,49 +1066,6 @@ export const deleteRecipients = async (req, res) => {
     }
 };
 
-// modules/controllers/V1/email-campaign.js
-
-// Add this import at the top
-import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Configure multer for file upload
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, '../../../../uploads/tmp');
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
-});
-
-const upload = multer({ 
-    storage: storage,
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only CSV files are allowed'), false);
-        }
-    },
-    limits: {
-        fileSize: 10 * 1024 * 1024 // 10MB
-    }
-});
-
-// modules/controllers/V1/email-campaign.js
-
-
-
 export const importCSV = async (req, res) => {
     console.log("=== IMPORT CSV START ===");
     
@@ -1127,46 +1085,75 @@ export const importCSV = async (req, res) => {
                 message: "No valid data found in CSV" 
             });
         }
-        
+
+        // console.log("Parse CSv: ", req.parsedCSV);
+        // console.log("ID : ", req.body.list_id);
+    
         let inserted = 0;
         let skipped = 0;
-        const errors = [];
+        let duplicateEmails = []; // For emails that already exist in this list
+        let failedImports = []; // For other errors
         
         for (let i = 0; i < req.parsedCSV.length; i++) {
             const row = req.parsedCSV[i];
+            // Support multiple field name variations
             const email = row.email || row.Email || row.EMAIL;
+            const firstName = row.first_name || row.firstname || row.firstName || row.name || row.Name;
+            const lastName = row.last_name || row.lastname || row.lastName || '';
             const rowNum = i + 2;
             
+            // Validate email
             if (!email) {
                 skipped++;
-                errors.push(`Row ${rowNum}: Missing email`);
+                failedImports.push({
+                    row: rowNum,
+                    email: 'Missing',
+                    reason: 'Email address is required'
+                });
                 continue;
             }
             
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(email)) {
                 skipped++;
-                errors.push(`Row ${rowNum}: Invalid email format - ${email}`);
+                failedImports.push({
+                    row: rowNum,
+                    email: email,
+                    reason: 'Invalid email format'
+                });
                 continue;
             }
+
+            // console.log("validations done");
             
-            // Check if email already exists
+            
+            // Check if email already exists in this mailing list
             const existing = await CommonModel.getData(
                 'crm_marketing_email_recipient',
                 'id',
                 `email = '${email}' AND mailing_list_id = ${list_id}`
             );
             
+            // console.log("Db failing");
+            
+            // console.log("existing ", existing);
+            
             if (existing && existing.length > 0) {
                 skipped++;
-                errors.push(`Row ${rowNum}: Email already exists - ${email}`);
+                duplicateEmails.push({
+                    row: rowNum,
+                    email: email,
+                    name: firstName,
+                    last_name: lastName,
+                    reason: 'Email already exists in this mailing list'
+                });
                 continue;
             }
             
             // Insert recipient
             const insertData = {
-                name: row.name || row.first_name || '',
-                last_name: row.last_name || '',
+                name: firstName || '',
+                last_name: lastName || '',
                 email: email,
                 mailing_list_id: list_id,
                 mail_status: 'pending',
@@ -1175,28 +1162,50 @@ export const importCSV = async (req, res) => {
                 created_by: req.user?.id || 1,
                 updated_by: req.user?.id || 1
             };
+            // console.log("Insert data", insertData);
             
             try {
+                // console.log("Inside try");
+                
                 const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
+                console.log("Result :", result[0]);
+                
                 if (result) {
+                    console.log("if block");
+                    
                     inserted++;
                 } else {
                     skipped++;
-                    errors.push(`Row ${rowNum}: Insert failed`);
+                    console.log("else");
+                    
+                    failedImports.push({
+                        row: rowNum,
+                        email: email,
+                        reason: 'Database insert failed'
+                    });
                 }
             } catch (dbError) {
-                // Check if it's a duplicate error
                 if (dbError.code === 'ER_DUP_ENTRY') {
                     skipped++;
-                    errors.push(`Row ${rowNum}: Email already exists - ${email}`);
+                    duplicateEmails.push({
+                        row: rowNum,
+                        email: email,
+                        name: firstName,
+                        last_name: lastName,
+                        reason: 'Email already exists'
+                    });
                 } else {
                     skipped++;
-                    errors.push(`Row ${rowNum}: ${dbError.message}`);
+                    failedImports.push({
+                        row: rowNum,
+                        email: email,
+                        reason: dbError.message
+                    });
                 }
             }
         }
         
-        // Clean up file using fs from import
+        // Clean up file
         if (req.file && req.file.path && fs.existsSync(req.file.path)) {
             fs.unlinkSync(req.file.path);
         }
@@ -1204,13 +1213,17 @@ export const importCSV = async (req, res) => {
         res.json({
             success: true,
             message: `${inserted} imported, ${skipped} skipped`,
-            data: { inserted, skipped, errors: errors.slice(0, 10) }
+            data: { 
+                inserted, 
+                skipped,
+                duplicate_emails: duplicateEmails,
+                failed_imports: failedImports
+            }
         });
         
     } catch (error) {
         console.error("Import error:", error);
         
-        // Clean up file on error
         if (req.file && req.file.path && fs.existsSync(req.file.path)) {
             fs.unlinkSync(req.file.path);
         }
