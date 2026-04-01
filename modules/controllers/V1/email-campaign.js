@@ -1,6 +1,7 @@
 import CommonModel from '../../../modules/models/mysql/commonModel/commonModel.js';
 import { slugify } from '../../../helpers/V1/core_helper.js';
 import fs from 'fs';
+import GoogleOAuthHelper from '../../../helpers/V1/googleOAuthHelper.js';
 
 // ==================== TEMPLATE MASTER ====================
 
@@ -1162,13 +1163,13 @@ export const importCSV = async (req, res) => {
                 created_by: req.user?.id || 1,
                 updated_by: req.user?.id || 1
             };
-            // console.log("Insert data", insertData);
+            console.log("Insert data by king make lokesh jaiswar if you have gut fix it", insertData);
             
             try {
                 // console.log("Inside try");
                 
                 const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
-                console.log("Result :", result[0]);
+                console.log("Result by king make lokesh jaiswaar brother name uppercase  :", {result});
                 
                 if (result) {
                     console.log("if block");
@@ -1814,5 +1815,64 @@ export const getDashboardStats = async (req, res) => {
             success: false,
             message: "Internal Server Error"
         });
+    }
+};
+
+// ==================== GMAIL CONNECTION ====================
+
+// Step 1: Get Google Auth URL
+export const getGmailAuthUrl = async (req, res) => {
+    try {
+        const { senderId } = req.params;
+        
+        // ✅ Directly generate URL with senderId in state
+        const authUrl = GoogleOAuthHelper.getAuthUrl(senderId);
+        
+        res.json({ 
+            success: true, 
+            url: authUrl 
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+// Step 2: Gmail Callback - Google redirects here
+export const gmailCallback = async (req, res) => {
+    try {
+        const { code, state } = req.query;
+        
+        if (!code) {
+            throw new Error('No authorization code received');
+        }
+        
+        let senderId = null;
+        if (state) {
+            const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
+            senderId = stateData.senderId;
+        }
+        
+        if (!senderId) {
+            throw new Error('No sender ID found in state');
+        }
+        
+        // Exchange code for tokens
+        const tokens = await GoogleOAuthHelper.getTokensFromCode(code);
+        
+        // Save tokens to database
+        await GoogleOAuthHelper.saveTokens(senderId, tokens);
+        
+        console.log(`✅ Gmail connected successfully for sender ID: ${senderId}`);
+        
+        // Redirect to frontend
+        res.redirect(`${process.env.FRONTEND_URL}/email-campaign/senders?gmail_connected=true`);
+        
+    } catch (error) {
+        console.error('Error in gmailCallback:', error);
+        res.redirect(`${process.env.FRONTEND_URL}/email-campaign/senders?gmail_connected=false&error=${encodeURIComponent(error.message)}`);
     }
 };
