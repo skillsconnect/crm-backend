@@ -13,7 +13,7 @@ async function schedulePendingCampaigns() {
   const istDate = new Date(now.getTime() + offset);
   const currentDateTime = istDate.toISOString().slice(0, 19).replace('T', ' ');
 
-    console.log("time :",currentDateTime);
+    // console.log("time :",currentDateTime);
     
 
     // Get campaigns that are scheduled and ready to send
@@ -23,7 +23,7 @@ async function schedulePendingCampaigns() {
       `status = 'scheduled' AND schedule_time <= '${currentDateTime}'`
     );
 
-    console.log("campaign :",campaigns);
+    // console.log("campaign :",campaigns);
     
     
     if (!campaigns || campaigns.length === 0) {

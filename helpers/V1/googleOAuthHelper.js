@@ -151,6 +151,13 @@ export class GoogleOAuthHelper {
       threadId: response.data.threadId
     };
   }
+
+  static async getGmailClient(senderId) {
+    const accessToken = await this.getValidAccessToken(senderId);
+    const oauth2Client = this.getOAuth2Client();
+    oauth2Client.setCredentials({ access_token: accessToken });
+    return google.gmail({ version: 'v1', auth: oauth2Client });
+  }
 }
 
 export default GoogleOAuthHelper;

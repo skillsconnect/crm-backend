@@ -31,8 +31,8 @@ cron.schedule('*/30 * * * * *', () => {
   });
 });
 
-// Run checkReplies every 5 minutes
-cron.schedule('*/5 * * * *', () => {
+// Run checkReplies every 3 minutes
+cron.schedule('*/3 * * * *', () => {
   console.log(`[${getIST()}] Running checkReplies...`);
   exec('node cron/checkReplies.js', { cwd: path.resolve(__dirname, '..') }, (error, stdout, stderr) => {
     if (error) console.error(`Reply check error: ${error}`);

@@ -27,7 +27,15 @@ export class EmailSendingService {
       let sent = 0;
       let failed = 0;
       
+      // Track campaign IDs to update later
+      const campaignStats = new Map(); // campaignId -> { sent, failed, total }
+      
       for (const email of queuedEmails) {
+        // Initialize campaign stats
+        if (!campaignStats.has(email.campaign_id)) {
+          campaignStats.set(email.campaign_id, { sent: 0, failed: 0 });
+        }
+        
         try {
           // Get recipient
           const recipient = await CommonModel.getData(
@@ -39,6 +47,8 @@ export class EmailSendingService {
           if (!recipient || recipient.length === 0) {
             await this.markEmailFailed(email.id, 'Recipient not found');
             failed++;
+            const stats = campaignStats.get(email.campaign_id);
+            stats.failed++;
             continue;
           }
           
@@ -52,27 +62,28 @@ export class EmailSendingService {
           if (!template || template.length === 0) {
             await this.markEmailFailed(email.id, 'Template not found');
             failed++;
+            const stats = campaignStats.get(email.campaign_id);
+            stats.failed++;
             continue;
           }
           
-          // ✅ Sirf data prepare karo, replacement getCampaignEmailContent karega
+          // Prepare email data
           const emailData = {
-            name: recipient[0].name + ' ' + recipient[0].last_name || 'Valued Customer',
+            name: (recipient[0].name + ' ' + recipient[0].last_name).trim() || 'Valued Customer',
             email: recipient[0].email
           };
           
-          // ✅ getCampaignEmailContent handle karega:
-          // 1. Template fetch karna
-          // 2. {name} replace karna
-          // 3. Layout render karna
+          // Generate email content
           const emailContent = await getCampaignEmailContent(
             emailData,
-            template[0].slug  // template slug (e.g., "winter-sale")
+            template[0].slug
           );
           
           if (!emailContent) {
             await this.markEmailFailed(email.id, 'Failed to generate email content');
             failed++;
+            const stats = campaignStats.get(email.campaign_id);
+            stats.failed++;
             continue;
           }
           
@@ -88,10 +99,14 @@ export class EmailSendingService {
             await this.markEmailSent(email.id, result.messageId, result);
             await this.updateRecipientStatus(recipient[0].id, 'sent');
             sent++;
+            const stats = campaignStats.get(email.campaign_id);
+            stats.sent++;
             console.log(`✅ Email sent to ${recipient[0].email}`);
           } else {
             await this.markEmailFailed(email.id, result.error);
             failed++;
+            const stats = campaignStats.get(email.campaign_id);
+            stats.failed++;
           }
           
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -100,7 +115,14 @@ export class EmailSendingService {
           console.error(`❌ Failed to send email ${email.id}:`, error);
           await this.markEmailFailed(email.id, error.message);
           failed++;
+          const stats = campaignStats.get(email.campaign_id);
+          stats.failed++;
         }
+      }
+      
+      // ✅ Update campaign status based on stats
+      for (const [campaignId, stats] of campaignStats) {
+        await this.updateCampaignStatus(campaignId);
       }
       
       console.log(`📊 Summary: ${sent} sent, ${failed} failed`);
@@ -112,6 +134,124 @@ export class EmailSendingService {
     }
   }
   
+  // ✅ New method to update campaign status
+  static async updateCampaignStatus(campaignId) {
+    try {
+      // Get total emails for this campaign
+      const totalResult = await CommonModel.getData(
+        'crm_campaign_email_logs',
+        'COUNT(*) as total',
+        `campaign_id = ${campaignId}`
+      );
+      const totalEmails = totalResult?.[0]?.total || 0;
+      
+      // Get sent count
+      const sentResult = await CommonModel.getData(
+        'crm_campaign_email_logs',
+        'COUNT(*) as sent',
+        `campaign_id = ${campaignId} AND status = 'sent'`
+      );
+      const sentCount = sentResult?.[0]?.sent || 0;
+      
+      // Get failed count
+      const failedResult = await CommonModel.getData(
+        'crm_campaign_email_logs',
+        'COUNT(*) as failed',
+        `campaign_id = ${campaignId} AND status = 'failed'`
+      );
+      const failedCount = failedResult?.[0]?.failed || 0;
+      
+      const processedCount = sentCount + failedCount;
+      
+      console.log(`Campaign ${campaignId}: Total: ${totalEmails}, Sent: ${sentCount}, Failed: ${failedCount}, Processed: ${processedCount}`);
+      
+      // Update campaign mailing lists sent count
+      const campaignLists = await CommonModel.getData(
+        'crm_campaign_mailing_lists',
+        '*',
+        `campaign_id = ${campaignId}`
+      );
+      
+      for (const campaignList of campaignLists) {
+        // Get sent count for this specific mailing list
+        const listSentResult = await CommonModel.getData(
+          'crm_campaign_email_logs',
+          'COUNT(*) as sent',
+          `campaign_id = ${campaignId} AND status = 'sent'`
+        );
+        
+        await CommonModel.updateData(
+          'crm_campaign_mailing_lists',
+          {
+            sent_count: listSentResult?.[0]?.sent || 0,
+            updated_at: new Date()
+          },
+          `id = ${campaignList.id}`
+        );
+      }
+      
+      // ✅ If all emails are processed, update campaign status
+      if (processedCount >= totalEmails && totalEmails > 0) {
+        let newStatus = 'completed';
+        
+        // If all failed, you might want to mark as failed
+        if (sentCount === 0 && failedCount > 0) {
+          newStatus = 'failed';
+        }
+        
+        await CommonModel.updateData(
+          'crm_campaigns',
+          { 
+            status: newStatus,
+            updated_at: new Date()
+          },
+          `id = ${campaignId}`
+        );
+        
+        console.log(`✅ Campaign ${campaignId} marked as ${newStatus}`);
+        
+        // Update all mailing lists status
+        await CommonModel.updateData(
+          'crm_campaign_mailing_lists',
+          { status: 'completed' },
+          `campaign_id = ${campaignId}`
+        );
+      } else {
+        // Update campaign mailing lists status
+        for (const campaignList of campaignLists) {
+          const listTotal = await CommonModel.getData(
+            'crm_campaign_email_logs',
+            'COUNT(*) as total',
+            `campaign_id = ${campaignId} AND recipient_id IN (SELECT id FROM crm_marketing_email_recipient WHERE mailing_list_id = ${campaignList.mailing_list_id})`
+          );
+          
+          const listSent = await CommonModel.getData(
+            'crm_campaign_email_logs',
+            'COUNT(*) as sent',
+            `campaign_id = ${campaignId} AND status = 'sent' AND recipient_id IN (SELECT id FROM crm_marketing_email_recipient WHERE mailing_list_id = ${campaignList.mailing_list_id})`
+          );
+          
+          const listProcessed = (listSent?.[0]?.sent || 0);
+          const listTotalCount = listTotal?.[0]?.total || 0;
+          
+          if (listProcessed >= listTotalCount && listTotalCount > 0) {
+            await CommonModel.updateData(
+              'crm_campaign_mailing_lists',
+              { status: 'completed' },
+              `id = ${campaignList.id}`
+            );
+          }
+        }
+      }
+      
+      return { success: true };
+      
+    } catch (error) {
+      console.error(`Error updating campaign status for ${campaignId}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+  
   static async markEmailSent(logId, messageId, response) {
     await CommonModel.updateData(
       'crm_campaign_email_logs',
@@ -119,7 +259,8 @@ export class EmailSendingService {
         status: 'sent',
         sent_at: new Date(),
         gmail_message_id: messageId,
-        response: JSON.stringify(response)
+        response: JSON.stringify(response),
+        updated_at: new Date()
       },
       `id = ${logId}`
     );
@@ -130,7 +271,8 @@ export class EmailSendingService {
       'crm_campaign_email_logs',
       {
         status: 'failed',
-        error_message: errorMessage
+        error_message: errorMessage,
+        updated_at: new Date()
       },
       `id = ${logId}`
     );
@@ -139,7 +281,10 @@ export class EmailSendingService {
   static async updateRecipientStatus(recipientId, status) {
     await CommonModel.updateData(
       'crm_marketing_email_recipient',
-      { mail_status: status },
+      { 
+        mail_status: status,
+        updated_at: new Date()
+      },
       `id = ${recipientId}`
     );
   }
@@ -169,7 +314,6 @@ export class EmailSendingService {
           'crm_marketing_email_recipient',
           '*',
           `mailing_list_id = ${campaignList.mailing_list_id}`
-          // `mailing_list_id = ${campaignList.mailing_list_id} AND mail_status = 'pending'`
         );
         
         for (const recipient of recipients) {
@@ -190,7 +334,8 @@ export class EmailSendingService {
           'crm_campaign_mailing_lists',
           {
             status: 'in_progress',
-            total_emails: totalQueued
+            total_emails: totalQueued,
+            updated_at: new Date()
           },
           `id = ${campaignList.id}`
         );
@@ -198,7 +343,10 @@ export class EmailSendingService {
       
       await CommonModel.updateData(
         'crm_campaigns',
-        { status: 'in_progress'},
+        { 
+          status: 'in_progress',
+          updated_at: new Date()
+        },
         `id = ${campaignId}`
       );
       
