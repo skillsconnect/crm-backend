@@ -1,4 +1,3 @@
-// cron/runner.js
 import cron from 'node-cron';
 import { exec } from 'child_process';
 import path from 'path';
@@ -36,6 +35,16 @@ cron.schedule('*/3 * * * *', () => {
   console.log(`[${getIST()}] Running checkReplies...`);
   exec('node cron/checkReplies.js', { cwd: path.resolve(__dirname, '..') }, (error, stdout, stderr) => {
     if (error) console.error(`Reply check error: ${error}`);
+    if (stdout) console.log(stdout);
+    if (stderr) console.error(stderr);
+  });
+});
+
+// ✅ NEW: Run process email sender every minute
+cron.schedule('* * * * *', () => {
+  console.log(`[${getIST()}] Running process email sender...`);
+  exec('node cron/scheduleProcessEmails.js', { cwd: path.resolve(__dirname, '..') }, (error, stdout, stderr) => {
+    if (error) console.error(`Process email error: ${error}`);
     if (stdout) console.log(stdout);
     if (stderr) console.error(stderr);
   });

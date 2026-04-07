@@ -8,7 +8,9 @@
     "start": "node app.js",
     "cron:schedule": "node cron/scheduleCampaigns.js",
     "cron:send": "node cron/sendEmails.js",
-    "cron:replies": "node cron/checkReplies.js"
+    "cron:replies": "node cron/checkReplies.js",
+    "process-cron": "node cron/processRunner.js",
+    "process-send": "node cron/scheduleProcessEmails.js"
   },
   "keywords": [],
   "author": "",
@@ -27,12 +29,20 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.1",
     "googleapis": "^171.4.0",
+    "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.3",
     "knex": "^3.1.0",
     "multer": "^2.1.1",
     "mysql2": "^3.19.1",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.2",
+    "pdf-image": "^2.0.0",
+    "pdf-parse": "^2.4.5",
+    "pdf-parse-fixed": "^1.1.1",
+    "pdf2json": "^4.0.2",
+    "pdf2pic": "^3.2.0",
+    "sharp": "^0.34.5",
+    "tesseract.js": "^7.0.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {

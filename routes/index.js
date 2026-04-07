@@ -27,10 +27,12 @@ const loadRouter = async (name) => {
 const login = await loadRouter('login');
 const leads = await loadRouter('leads');
 const email_campaign = await loadRouter('email-campaign')
+const processs = await loadRouter('processs')
 
 // route 
 router.use("/auth", login);
 router.use("/leads", leads)
 router.use("/email-campaign", email_campaign)
+router.use("/processs", processs)
 
 export default router;
