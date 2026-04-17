@@ -34,7 +34,7 @@ export const getAllProcesses = async (req, res) => {
     const orderDir = String(sort_dir).toLowerCase() === 'asc' ? 'asc' : 'desc';
 
     const rows = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       '*',
       condition,
       orderBy,
@@ -52,7 +52,7 @@ export const getProcessById = async (req, res) => {
   try {
     const { id } = req.params;
     const rows = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       '*',
       `id = ${Number(id)}`
     );
@@ -82,7 +82,7 @@ export const createProcess = async (req, res) => {
     }
 
     const duplicate = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       'id',
       `process_name = '${processName.replace(/'/g, "\\'")}'`
     );
@@ -104,13 +104,13 @@ export const createProcess = async (req, res) => {
       updated_by: req.user?.id || body.updated_by || 1,
     };
 
-    const insertedId = await CommonModel.insertData('crm_process', insertData);
+    const insertedId = await CommonModel.insertData('tblprocess', insertData);
     if (!insertedId) {
       return res.status(400).json({ success: false, message: 'Error creating process' });
     }
 
     const created = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       '*',
       `id = ${insertedId}`
     );
@@ -129,7 +129,7 @@ export const updateProcess = async (req, res) => {
     const body = req.body || {};
 
     const existing = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       '*',
       `id = ${processId}`
     );
@@ -143,7 +143,7 @@ export const updateProcess = async (req, res) => {
     if (body.process_name && String(body.process_name).trim()) {
       const processName = String(body.process_name).trim();
       const duplicate = await CommonModel.getData(
-        'crm_process',
+        'tblprocess',
         'id',
         `process_name = '${processName.replace(/'/g, "\\'")}' AND id != ${processId}`
       );
@@ -163,7 +163,7 @@ export const updateProcess = async (req, res) => {
     if (communication_mode) updateData.communication_mode = communication_mode;
 
     const updated = await CommonModel.updateData(
-      'crm_process',
+      'tblprocess',
       updateData,
       `id = ${processId}`
     );
@@ -173,7 +173,7 @@ export const updateProcess = async (req, res) => {
     }
 
     const updatedRow = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       '*',
       `id = ${processId}`
     );
@@ -191,7 +191,7 @@ export const deleteProcess = async (req, res) => {
     const processId = Number(id);
 
     const existing = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       'id',
       `id = ${processId}`
     );
@@ -200,7 +200,7 @@ export const deleteProcess = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Process not found' });
     }
 
-    const deleted = await CommonModel.deleteRecord('crm_process', `id = ${processId}`);
+    const deleted = await CommonModel.deleteRecord('tblprocess', `id = ${processId}`);
     if (!deleted) {
       return res.status(400).json({ success: false, message: 'Error deleting process' });
     }
@@ -223,7 +223,7 @@ export const getProcessDetails = async (req, res) => {
     }
 
     const processMaster = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       '*',
       `id = ${masterProcessId}`
     );
@@ -237,7 +237,7 @@ export const getProcessDetails = async (req, res) => {
     if (leadId) staffCondition += ` AND lead_id = ${leadId}`;
 
     const staffRows = await CommonModel.getData(
-      'crm_process_staff',
+      'tblprocess_staff',
       '*',
       staffCondition,
       'id',
@@ -270,7 +270,7 @@ export const saveProcessDetails = async (req, res) => {
 
     if (!masterProcessId && body.process_name) {
       const masterByName = await CommonModel.getData(
-        'crm_process',
+        'tblprocess',
         'id, process_name, email_subject, whatsapp_content, whatsapp_template_name',
         `process_name = '${String(body.process_name).trim().replace(/'/g, "\\'")}'`
       );
@@ -288,7 +288,7 @@ export const saveProcessDetails = async (req, res) => {
     }
 
     const masterRows = await CommonModel.getData(
-      'crm_process',
+      'tblprocess',
       'id, process_name, email_subject, whatsapp_content, whatsapp_template_name',
       `id = ${masterProcessId}`
     );
@@ -318,7 +318,7 @@ export const saveProcessDetails = async (req, res) => {
     if (leadId) condition += ` AND lead_id = ${leadId}`;
 
     const existing = await CommonModel.getData(
-      'crm_process_staff',
+      'tblprocess_staff',
       '*',
       condition,
       'id',
@@ -332,7 +332,7 @@ export const saveProcessDetails = async (req, res) => {
       const existingId = existing[0].id;
       saveData.updated_on = new Date();
       saveData.updated_by = Number(staffId);
-      updated = await CommonModel.updateData('crm_process_staff', saveData, `id = ${existingId}`);
+      updated = await CommonModel.updateData('tblprocess_staff', saveData, `id = ${existingId}`);
       savedId = existingId;
     } else {
       saveData.lead_id = leadId;
@@ -343,7 +343,7 @@ export const saveProcessDetails = async (req, res) => {
       saveData.created_by = Number(staffId);
       saveData.updated_on = new Date();
       saveData.updated_by = Number(staffId);
-      savedId = await CommonModel.insertData('crm_process_staff', saveData);
+      savedId = await CommonModel.insertData('tblprocess_staff', saveData);
       updated = !!savedId;
     }
 
@@ -352,7 +352,7 @@ export const saveProcessDetails = async (req, res) => {
     }
 
     const saved = await CommonModel.getData(
-      'crm_process_staff',
+      'tblprocess_staff',
       '*',
       `id = ${Number(savedId)}`
     );
