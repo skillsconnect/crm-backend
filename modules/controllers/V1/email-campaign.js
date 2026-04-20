@@ -888,16 +888,31 @@ export const addRecipient = async (req, res) => {
             });
         }
 
-        const existing = await CommonModel.getData(
+        // Check if email exists in THIS mailing list
+        const existingInList = await CommonModel.getData(
             'crm_marketing_email_recipient',
             'id',
             `email = '${email}' AND mailing_list_id = ${listId}`
         );
 
-        if (existing && existing.length > 0) {
+        if (existingInList && existingInList.length > 0) {
             return res.status(400).json({
                 success: false,
-                message: "Email already exists"
+                message: `Email "${email}" already exists in this mailing list`
+            });
+        }
+
+        // Optional: Check if email exists in ANY mailing list (if you want to prevent duplicates globally)
+        const existingAnywhere = await CommonModel.getData(
+            'crm_marketing_email_recipient',
+            'id',
+            `email = '${email}'`
+        );
+
+        if (existingAnywhere && existingAnywhere.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `Email "${email}" already exists in another mailing list. Please use a different email.`
             });
         }
 
@@ -913,31 +928,55 @@ export const addRecipient = async (req, res) => {
             updated_by: userId || 0
         };
 
-        const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
+        try {
+            const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
 
-        if (!result) {
+            if (!result) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Error adding recipient"
+                });
+            }
+
+            const newRecipient = await CommonModel.getData(
+                'crm_marketing_email_recipient',
+                '*',
+                `id = ${result}`
+            );
+
+            res.status(201).json({
+                success: true,
+                message: "Recipient added successfully",
+                data: newRecipient[0]
+            });
+            
+        } catch (dbError) {
+            // Handle duplicate entry error specifically
+            if (dbError.code === 'ER_DUP_ENTRY') {
+                return res.status(400).json({
+                    success: false,
+                    message: `Email "${email}" already exists. Please use a different email address.`,
+                    error_code: 'DUPLICATE_EMAIL'
+                });
+            }
+            // Re-throw other database errors
+            throw dbError;
+        }
+        
+    } catch (error) {
+        console.error('Error in addRecipient:', error);
+        
+        // Send proper error response instead of just "Internal Server Error"
+        if (error.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({
                 success: false,
-                message: "Error adding recipient"
+                message: "Email already exists in this mailing list"
             });
         }
-
-        const newRecipient = await CommonModel.getData(
-            'crm_marketing_email_recipient',
-            '*',
-            `id = ${result}`
-        );
-
-        res.status(201).json({
-            success: true,
-            message: "Recipient added successfully",
-            data: newRecipient[0]
-        });
-    } catch (error) {
-        console.error('Error:', error);
+        
         res.status(500).json({
             success: false,
-            message: "Internal Server Error"
+            message: error.message || "Failed to add recipient"
         });
     }
 };
@@ -1086,18 +1125,14 @@ export const importCSV = async (req, res) => {
                 message: "No valid data found in CSV" 
             });
         }
-
-        // console.log("Parse CSv: ", req.parsedCSV);
-        // console.log("ID : ", req.body.list_id);
     
         let inserted = 0;
         let skipped = 0;
-        let duplicateEmails = []; // For emails that already exist in this list
-        let failedImports = []; // For other errors
+        let duplicateEmails = [];
+        let failedImports = [];
         
         for (let i = 0; i < req.parsedCSV.length; i++) {
             const row = req.parsedCSV[i];
-            // Support multiple field name variations
             const email = row.email || row.Email || row.EMAIL;
             const firstName = row.first_name || row.firstname || row.firstName || row.name || row.Name;
             const lastName = row.last_name || row.lastname || row.lastName || '';
@@ -1124,9 +1159,6 @@ export const importCSV = async (req, res) => {
                 });
                 continue;
             }
-
-            // console.log("validations done");
-            
             
             // Check if email already exists in this mailing list
             const existing = await CommonModel.getData(
@@ -1134,10 +1166,6 @@ export const importCSV = async (req, res) => {
                 'id',
                 `email = '${email}' AND mailing_list_id = ${list_id}`
             );
-            
-            // console.log("Db failing");
-            
-            // console.log("existing ", existing);
             
             if (existing && existing.length > 0) {
                 skipped++;
@@ -1163,22 +1191,14 @@ export const importCSV = async (req, res) => {
                 created_by: req.user?.id || 1,
                 updated_by: req.user?.id || 1
             };
-            console.log("Insert data by king make lokesh jaiswar if you have gut fix it", insertData);
             
             try {
-                // console.log("Inside try");
-                
                 const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
-                console.log("Result by king make lokesh jaiswaar brother name uppercase  :", {result});
                 
                 if (result) {
-                    console.log("if block");
-                    
                     inserted++;
                 } else {
                     skipped++;
-                    console.log("else");
-                    
                     failedImports.push({
                         row: rowNum,
                         email: email,
@@ -1186,6 +1206,7 @@ export const importCSV = async (req, res) => {
                     });
                 }
             } catch (dbError) {
+                // Handle duplicate entry error
                 if (dbError.code === 'ER_DUP_ENTRY') {
                     skipped++;
                     duplicateEmails.push({
@@ -1193,7 +1214,7 @@ export const importCSV = async (req, res) => {
                         email: email,
                         name: firstName,
                         last_name: lastName,
-                        reason: 'Email already exists'
+                        reason: 'Email already exists in database'
                     });
                 } else {
                     skipped++;
@@ -1211,9 +1232,23 @@ export const importCSV = async (req, res) => {
             fs.unlinkSync(req.file.path);
         }
         
+        // Return appropriate response based on results
+        if (inserted === 0 && skipped > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `Import failed: ${skipped} records skipped. No records were imported.`,
+                data: { 
+                    inserted, 
+                    skipped,
+                    duplicate_emails: duplicateEmails,
+                    failed_imports: failedImports
+                }
+            });
+        }
+        
         res.json({
             success: true,
-            message: `${inserted} imported, ${skipped} skipped`,
+            message: `${inserted} imported successfully, ${skipped} skipped`,
             data: { 
                 inserted, 
                 skipped,
@@ -1229,9 +1264,11 @@ export const importCSV = async (req, res) => {
             fs.unlinkSync(req.file.path);
         }
         
+        // Send meaningful error message
         res.status(500).json({ 
             success: false, 
-            message: "Import failed: " + error.message 
+            message: "Import failed: " + (error.message || "Unknown error"),
+            error_details: error.code === 'ER_DUP_ENTRY' ? "Duplicate email found" : undefined
         });
     }
 };
