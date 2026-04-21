@@ -15,6 +15,15 @@ function fillPlaceholders(template, data) {
   return out;
 }
 
+// function fillPlaceholders(template, data) {
+//     let out = template ?? '';
+//     for (const [key, value] of Object.entries(data || {})) {
+//         const regex = new RegExp(`{${key}}`, 'g');
+//         out = out.replace(regex, String(value ?? ''));
+//     }
+//     return out;
+// }
+
 // Resolve common header/footer path
 const commonWrapperPath = path.resolve(
   __dirname,

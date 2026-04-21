@@ -30,7 +30,11 @@ import {
     getDashboardStats,
     importCSV,
     getGmailAuthUrl,
-    gmailCallback
+    gmailCallback,
+    downloadSampleCSV,
+    sendDemoEmail,
+    previewCampaign,
+    getCampaignPreview
 } from '../../modules/controllers/V1/email-campaign.js';
 
 import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
@@ -75,5 +79,11 @@ router.get('/dashboard-stats', getDashboardStats);
 // ==================== GMAIL ROUTES (NEW) ====================
 router.get('/gmail/auth-url/:senderId', getGmailAuthUrl);
 router.get('/gmail/callback', gmailCallback);
+
+// Preview & Demo Email Routes
+router.get('/campaigns/:campaignId/preview', getCampaignPreview);
+router.post('/campaigns/:campaignId/preview', previewCampaign);
+router.post('/campaigns/:campaignId/send-demo', sendDemoEmail);
+router.get('/download-sample-csv', downloadSampleCSV);
 
 export default router;

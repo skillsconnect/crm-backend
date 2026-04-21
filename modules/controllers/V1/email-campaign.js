@@ -888,7 +888,7 @@ export const addRecipient = async (req, res) => {
             });
         }
 
-        // Check if email exists in THIS mailing list
+        // ✅ Check if email exists in THIS mailing list only (not globally)
         const existingInList = await CommonModel.getData(
             'crm_marketing_email_recipient',
             'id',
@@ -902,19 +902,8 @@ export const addRecipient = async (req, res) => {
             });
         }
 
-        // Optional: Check if email exists in ANY mailing list (if you want to prevent duplicates globally)
-        const existingAnywhere = await CommonModel.getData(
-            'crm_marketing_email_recipient',
-            'id',
-            `email = '${email}'`
-        );
-
-        if (existingAnywhere && existingAnywhere.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: `Email "${email}" already exists in another mailing list. Please use a different email.`
-            });
-        }
+        // ✅ Remove the global check - allow same email in different lists
+        // No need to check existingAnywhere anymore
 
         const insertData = {
             name: name || null,
@@ -928,45 +917,30 @@ export const addRecipient = async (req, res) => {
             updated_by: userId || 0
         };
 
-        try {
-            const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
+        const result = await CommonModel.insertData('crm_marketing_email_recipient', insertData);
 
-            if (!result) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Error adding recipient"
-                });
-            }
-
-            const newRecipient = await CommonModel.getData(
-                'crm_marketing_email_recipient',
-                '*',
-                `id = ${result}`
-            );
-
-            res.status(201).json({
-                success: true,
-                message: "Recipient added successfully",
-                data: newRecipient[0]
+        if (!result) {
+            return res.status(400).json({
+                success: false,
+                message: "Error adding recipient"
             });
-            
-        } catch (dbError) {
-            // Handle duplicate entry error specifically
-            if (dbError.code === 'ER_DUP_ENTRY') {
-                return res.status(400).json({
-                    success: false,
-                    message: `Email "${email}" already exists. Please use a different email address.`,
-                    error_code: 'DUPLICATE_EMAIL'
-                });
-            }
-            // Re-throw other database errors
-            throw dbError;
         }
+
+        const newRecipient = await CommonModel.getData(
+            'crm_marketing_email_recipient',
+            '*',
+            `id = ${result}`
+        );
+
+        res.status(201).json({
+            success: true,
+            message: "Recipient added successfully",
+            data: newRecipient[0]
+        });
         
     } catch (error) {
         console.error('Error in addRecipient:', error);
         
-        // Send proper error response instead of just "Internal Server Error"
         if (error.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({
                 success: false,
@@ -1106,6 +1080,7 @@ export const deleteRecipients = async (req, res) => {
     }
 };
 
+// Update the importCSV function
 export const importCSV = async (req, res) => {
     console.log("=== IMPORT CSV START ===");
     
@@ -1160,7 +1135,7 @@ export const importCSV = async (req, res) => {
                 continue;
             }
             
-            // Check if email already exists in this mailing list
+            // ✅ Check if email already exists in THIS mailing list only
             const existing = await CommonModel.getData(
                 'crm_marketing_email_recipient',
                 'id',
@@ -1206,7 +1181,6 @@ export const importCSV = async (req, res) => {
                     });
                 }
             } catch (dbError) {
-                // Handle duplicate entry error
                 if (dbError.code === 'ER_DUP_ENTRY') {
                     skipped++;
                     duplicateEmails.push({
@@ -1214,7 +1188,7 @@ export const importCSV = async (req, res) => {
                         email: email,
                         name: firstName,
                         last_name: lastName,
-                        reason: 'Email already exists in database'
+                        reason: 'Email already exists in this mailing list'
                     });
                 } else {
                     skipped++;
@@ -1232,7 +1206,6 @@ export const importCSV = async (req, res) => {
             fs.unlinkSync(req.file.path);
         }
         
-        // Return appropriate response based on results
         if (inserted === 0 && skipped > 0) {
             return res.status(400).json({
                 success: false,
@@ -1264,11 +1237,49 @@ export const importCSV = async (req, res) => {
             fs.unlinkSync(req.file.path);
         }
         
-        // Send meaningful error message
         res.status(500).json({ 
             success: false, 
             message: "Import failed: " + (error.message || "Unknown error"),
-            error_details: error.code === 'ER_DUP_ENTRY' ? "Duplicate email found" : undefined
+            error_details: error.code === 'ER_DUP_ENTRY' ? "Duplicate email found in this list" : undefined
+        });
+    }
+};
+
+// Add to modules/controllers/V1/email-campaign.js
+
+// Download sample CSV template
+export const downloadSampleCSV = async (req, res) => {
+    try {
+        const sampleData = [
+            { first_name: 'John', last_name: 'Doe', email: 'john.doe@example.com' },
+            { first_name: 'Jane', last_name: 'Smith', email: 'jane.smith@example.com' },
+            { first_name: 'Mike', last_name: 'Johnson', email: 'mike.johnson@example.com' }
+        ];
+        
+        // Create CSV content
+        const headers = ['first_name', 'last_name', 'email'];
+        const csvRows = [];
+        csvRows.push(headers.join(','));
+        
+        for (const row of sampleData) {
+            const values = headers.map(header => {
+                const value = row[header] || '';
+                return `"${value}"`;
+            });
+            csvRows.push(values.join(','));
+        }
+        
+        const csvContent = csvRows.join('\n');
+        
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=sample_recipients.csv');
+        res.send(csvContent);
+        
+    } catch (error) {
+        console.error('Error downloading sample CSV:', error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to download sample CSV"
         });
     }
 };
@@ -1911,5 +1922,326 @@ export const gmailCallback = async (req, res) => {
     } catch (error) {
         console.error('Error in gmailCallback:', error);
         res.redirect(`${process.env.FRONTEND_URL}/email-campaign/senders?gmail_connected=false&error=${encodeURIComponent(error.message)}`);
+    }
+};
+
+// Add to modules/controllers/V1/email-campaign.js
+
+// Preview campaign email with template rendering
+export const previewCampaign = async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+        const { recipient_email, recipient_name } = req.body;
+        
+        // Get campaign details
+        const campaign = await CommonModel.getData(
+            'crm_campaigns',
+            '*',
+            `id = ${campaignId}`
+        );
+        
+        if (!campaign || campaign.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Campaign not found"
+            });
+        }
+        
+        // Get template
+        const templateId = campaign[0].template_id.split(',')[0];
+        const template = await CommonModel.getData(
+            'crm_email_campaign_template',
+            '*',
+            `id = ${templateId}`
+        );
+        
+        if (!template || template.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Template not found"
+            });
+        }
+        
+        // Prepare preview data
+        const previewData = {
+            name: recipient_name || 'Sample User',
+            email: recipient_email || 'sample@example.com'
+        };
+        
+        // Get rendered email content
+        const { getCampaignEmailContent } = await import('../../../helpers/V1/email_content.helper.js');
+        const emailContent = await getCampaignEmailContent(previewData, template[0].slug);
+        
+        // Get mailing lists info
+        const campaignLists = await CommonModel.joinFetch(
+            ["crm_campaign_mailing_lists as cml", ["cml.*", "ml.name as list_name", "ml.status as list_status"]],
+            [["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]],
+            `cml.campaign_id = ${campaignId}`
+        );
+        
+        // Get recipient counts per list
+        for (const list of campaignLists) {
+            const count = await CommonModel.getData(
+                'crm_marketing_email_recipient',
+                'COUNT(*) as total',
+                `mailing_list_id = ${list.mailing_list_id}`
+            );
+            list.recipient_count = count?.[0]?.total || 0;
+        }
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                campaign: campaign[0],
+                template: template[0],
+                preview_html: emailContent.html,
+                preview_subject: emailContent.subject,
+                mailing_lists: campaignLists
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error in previewCampaign:', error);
+        res.status(500).json({
+            success: false,
+            message: "Internal Server Error"
+        });
+    }
+};
+
+// Send demo email for campaign preview
+export const sendDemoEmail = async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+        const { test_email, test_name, template_id, sender_id } = req.body;
+        
+        if (!test_email) {
+            return res.status(400).json({
+                success: false,
+                message: "Test email address is required"
+            });
+        }
+        
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(test_email)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid email format"
+            });
+        }
+        
+        // Get template
+        let template;
+        if (template_id) {
+            const templateData = await CommonModel.getData(
+                'crm_email_campaign_template',
+                '*',
+                `id = ${template_id}`
+            );
+            template = templateData?.[0];
+        } else {
+            // Get campaign template
+            const campaign = await CommonModel.getData(
+                'crm_campaigns',
+                '*',
+                `id = ${campaignId}`
+            );
+            if (campaign && campaign.length) {
+                const templateId = campaign[0].template_id?.split(',')[0];
+                if (templateId) {
+                    const templateData = await CommonModel.getData(
+                        'crm_email_campaign_template',
+                        '*',
+                        `id = ${templateId}`
+                    );
+                    template = templateData?.[0];
+                }
+            }
+        }
+        
+        if (!template) {
+            return res.status(404).json({
+                success: false,
+                message: "Template not found"
+            });
+        }
+        
+        // Get sender
+        let senderId = sender_id;
+        if (!senderId) {
+            const campaign = await CommonModel.getData(
+                'crm_campaigns',
+                '*',
+                `id = ${campaignId}`
+            );
+            if (campaign && campaign.length) {
+                senderId = campaign[0].sender_email_id?.split(',')[0];
+            }
+        }
+        
+        if (!senderId) {
+            return res.status(404).json({
+                success: false,
+                message: "Sender not found"
+            });
+        }
+        
+        // Prepare email data
+        const emailData = {
+            name: test_name || 'Test User',
+            email: test_email
+        };
+        
+        // Get rendered email content
+        const { getCampaignEmailContent } = await import('../../../helpers/V1/email_content.helper.js');
+        const emailContent = await getCampaignEmailContent(emailData, template.slug);
+        
+        // Send email via Gmail
+        const result = await GoogleOAuthHelper.sendEmail(
+            parseInt(senderId),
+            test_email,
+            emailContent.subject,
+            emailContent.html
+        );
+        
+        if (result.success) {
+            res.status(200).json({
+                success: true,
+                message: `Demo email sent successfully to ${test_email}`,
+                data: {
+                    messageId: result.messageId,
+                    threadId: result.threadId
+                }
+            });
+        } else {
+            throw new Error(result.error || 'Failed to send email');
+        }
+        
+    } catch (error) {
+        console.error('Error in sendDemoEmail:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || "Failed to send demo email"
+        });
+    }
+};
+
+// Get campaign preview data for the preview page
+export const getCampaignPreview = async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+        
+        // Get campaign with all details
+        const campaign = await CommonModel.getData(
+            'crm_campaigns',
+            '*',
+            `id = ${campaignId}`
+        );
+        
+        if (!campaign || campaign.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Campaign not found"
+            });
+        }
+        
+        // Get template
+        const templateId = campaign[0].template_id?.split(',')[0];
+        let template = null;
+        if (templateId) {
+            const templateData = await CommonModel.getData(
+                'crm_email_campaign_template',
+                '*',
+                `id = ${templateId}`
+            );
+            template = templateData?.[0];
+        }
+        
+        // Get sender
+        const senderId = campaign[0].sender_email_id?.split(',')[0];
+        let sender = null;
+        if (senderId) {
+            const senderData = await CommonModel.getData(
+                'crm_sender_emails',
+                '*',
+                `id = ${senderId}`
+            );
+            sender = senderData?.[0];
+        }
+        
+        // Get mailing lists with recipient counts
+        const campaignLists = await CommonModel.joinFetch(
+            ["crm_campaign_mailing_lists as cml", ["cml.*", "ml.name as list_name", "ml.status as list_status"]],
+            [["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]],
+            `cml.campaign_id = ${campaignId}`
+        );
+        
+        // Get sample recipients (first 5 from each list for preview)
+        let sampleRecipients = [];
+        if (campaignLists && campaignLists.length) {
+            for (const list of campaignLists) {
+                const recipients = await CommonModel.getData(
+                    'crm_marketing_email_recipient',
+                    'id, name, last_name, email, mail_status',
+                    `mailing_list_id = ${list.mailing_list_id}`,
+                    'id',
+                    'ASC',
+                    5
+                );
+                sampleRecipients.push({
+                    list_id: list.mailing_list_id,
+                    list_name: list.list_name,
+                    recipients: recipients || []
+                });
+            }
+        }
+        
+        // Get total recipient count
+        let totalRecipients = 0;
+        for (const list of campaignLists) {
+            const count = await CommonModel.getData(
+                'crm_marketing_email_recipient',
+                'COUNT(*) as total',
+                `mailing_list_id = ${list.mailing_list_id}`
+            );
+            totalRecipients += (count?.[0]?.total || 0);
+        }
+        
+        // Render preview with sample data
+        const previewData = {
+            name: 'Sample Recipient',
+            email: 'sample@example.com'
+        };
+        
+        let previewHtml = '<p>No template available for preview</p>';
+        let previewSubject = 'No Subject';
+        
+        if (template) {
+            const { getCampaignEmailContent } = await import('../../../helpers/V1/email_content.helper.js');
+            const emailContent = await getCampaignEmailContent(previewData, template.slug);
+            previewHtml = emailContent.html;
+            previewSubject = emailContent.subject;
+        }
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                campaign: campaign[0],
+                template: template,
+                sender: sender,
+                mailing_lists: campaignLists || [],
+                total_recipients: totalRecipients,
+                sample_recipients: sampleRecipients,
+                preview_html: previewHtml,
+                preview_subject: previewSubject
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error in getCampaignPreview:', error);
+        res.status(500).json({
+            success: false,
+            message: "Internal Server Error"
+        });
     }
 };
