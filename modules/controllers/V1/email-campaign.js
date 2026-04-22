@@ -2146,7 +2146,7 @@ export const getCampaignPreview = async (req, res) => {
         }
         
         // Get template
-        const templateId = campaign[0].template_id?.split(',')[0];
+        const templateId = campaign[0].template_id?.split(',')[0];    
         let template = null;
         if (templateId) {
             const templateData = await CommonModel.getData(
@@ -2169,42 +2169,39 @@ export const getCampaignPreview = async (req, res) => {
             sender = senderData?.[0];
         }
         
-        // Get mailing lists with recipient counts
+        // Get mailing lists
         const campaignLists = await CommonModel.joinFetch(
             ["crm_campaign_mailing_lists as cml", ["cml.*", "ml.name as list_name", "ml.status as list_status"]],
             [["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]],
             `cml.campaign_id = ${campaignId}`
         );
         
-        // Get sample recipients (first 5 from each list for preview)
-        let sampleRecipients = [];
+        // ✅ Get ALL recipients for each list (no limit)
+        let allRecipients = [];
+        let totalRecipients = 0;
+        
         if (campaignLists && campaignLists.length) {
             for (const list of campaignLists) {
+                // Get ALL recipients for this list
                 const recipients = await CommonModel.getData(
                     'crm_marketing_email_recipient',
-                    'id, name, last_name, email, mail_status',
+                    'id, name, last_name, email, mail_status, created_at',
                     `mailing_list_id = ${list.mailing_list_id}`,
                     'id',
-                    'ASC',
-                    5
+                    'ASC'
                 );
-                sampleRecipients.push({
+                
+                // Add recipient count to list
+                list.recipient_count = recipients?.length || 0;
+                totalRecipients += list.recipient_count;
+                
+                // Store all recipients
+                allRecipients.push({
                     list_id: list.mailing_list_id,
                     list_name: list.list_name,
                     recipients: recipients || []
                 });
             }
-        }
-        
-        // Get total recipient count
-        let totalRecipients = 0;
-        for (const list of campaignLists) {
-            const count = await CommonModel.getData(
-                'crm_marketing_email_recipient',
-                'COUNT(*) as total',
-                `mailing_list_id = ${list.mailing_list_id}`
-            );
-            totalRecipients += (count?.[0]?.total || 0);
         }
         
         // Render preview with sample data
@@ -2231,7 +2228,7 @@ export const getCampaignPreview = async (req, res) => {
                 sender: sender,
                 mailing_lists: campaignLists || [],
                 total_recipients: totalRecipients,
-                sample_recipients: sampleRecipients,
+                all_recipients: allRecipients,  // ✅ Send all recipients (not just samples)
                 preview_html: previewHtml,
                 preview_subject: previewSubject
             }
