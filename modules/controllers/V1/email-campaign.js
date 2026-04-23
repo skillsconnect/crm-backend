@@ -2126,7 +2126,7 @@ export const sendDemoEmail = async (req, res) => {
     }
 };
 
-// Get campaign preview data for the preview page
+// Get campaign preview data for the preview page d
 export const getCampaignPreview = async (req, res) => {
     try {
         const { campaignId } = req.params;
