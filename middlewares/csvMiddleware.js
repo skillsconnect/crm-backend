@@ -1,4 +1,3 @@
-// middlewares/csvMiddleware.js
 import multer from 'multer';
 import fs from 'fs';
 import csv from 'csv-parser';
@@ -28,14 +27,6 @@ export const validateCSV = (req, res, next) => {
     if (!records || records.length === 0) {
         fs.unlinkSync(req.file.path);
         return res.status(400).json({ success: false, message: "CSV file is empty" });
-    }
-    
-    const firstRow = records[0];
-    const hasEmail = firstRow.email || firstRow.Email || firstRow.EMAIL;
-    
-    if (!hasEmail) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ success: false, message: "CSV must contain email column" });
     }
     
     next();

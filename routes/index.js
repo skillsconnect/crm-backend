@@ -27,12 +27,20 @@ const loadRouter = async (name) => {
 const login = await loadRouter('login');
 const leads = await loadRouter('leads');
 const email_campaign = await loadRouter('email-campaign')
+<<<<<<< HEAD
 const processRouter = await loadRouter('process');
+=======
+const processs = await loadRouter('processs')
+>>>>>>> 368cdfcafcf3842b3e88e7e77977738ba1903a89
 
 // route 
 router.use("/auth", login);
 router.use("/leads", leads)
 router.use("/email-campaign", email_campaign)
+<<<<<<< HEAD
 router.use("/process", processRouter)
+=======
+router.use("/processs", processs)
+>>>>>>> 368cdfcafcf3842b3e88e7e77977738ba1903a89
 
 export default router;
