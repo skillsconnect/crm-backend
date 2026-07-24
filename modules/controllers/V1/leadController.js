@@ -3,6 +3,7 @@ import CommonModel from '../../../modules/models/mysql/commonModel/commonModel.j
 import { parse } from 'json2csv';
 import PDFParserService from '../../../services/pdfParserService.js';
 import OCRService from '../../../services/ocrService.js';
+import db from '../../../config/knex.js';
 
 const TABLES = {
     LEADS: 'crm_leads',
@@ -33,6 +34,16 @@ const queueIntroductoryEmail = async (leadId, data) => {
         return true;
     } catch (error) {
         console.error('Error queueing email:', error);
+        return false;
+    }
+};
+
+// crm_leads doesn't exist yet (Leads module itself isn't built out here yet) —
+// the delete-guard checks below need to tolerate that instead of throwing.
+const hasLeadsTable = async () => {
+    try {
+        return await db.schema.hasTable(TABLES.LEADS);
+    } catch {
         return false;
     }
 };
@@ -93,40 +104,76 @@ export const getStatusById = async (req, res) => {
     }
 };
 
-export const createStatus = async (req, res) => {
+// Single save handler for both add and edit — id comes from the URL (PUT
+// /statuses/:id) or the body (POST /statuses with an id in the payload).
+// Same validation and same CommonModel calls either way, just insert vs update.
+export const saveStatus = async (req, res) => {
     try {
+        const id = req.params.id || req.body.id;
         const { name, color, sequence, status } = req.body;
+        const trimmedName = name && name.trim() ? name.trim() : null;
 
-        if (!name || !name.trim()) {
+        // name is required to create a new status; on update it's optional
+        // (a caller may just be patching color/sequence/status).
+        if (!id && !trimmedName) {
             return res.status(400).json({
                 success: false,
                 message: "Status name is required"
             });
         }
 
-        const existing = await CommonModel.getData(
-            TABLES.STATUS,
-            'id',
-            `name = '${name.trim()}'`
-        );
+        if (trimmedName) {
+            const duplicateCondition = id
+                ? `name = '${trimmedName}' AND id != ${id}`
+                : `name = '${trimmedName}'`;
+            const duplicate = await CommonModel.getData(TABLES.STATUS, 'id', duplicateCondition);
+            if (duplicate && duplicate.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "A status with this name already exists"
+                });
+            }
+        }
 
-        if (existing && existing.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: "Status already exists"
+        if (id) {
+            const existing = await CommonModel.getData(TABLES.STATUS, '*', `id = ${id}`);
+            if (!existing || existing.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Status not found"
+                });
+            }
+
+            const updateData = {
+                updated_on: new Date(),
+                updated_by: req.user?.id || 1
+            };
+            if (trimmedName) updateData.name = trimmedName;
+            if (color) updateData.color = color;
+            if (sequence !== undefined && sequence !== null && sequence !== '') updateData.sequence = sequence;
+            if (status) updateData.status = status;
+
+            const updated = await CommonModel.updateData(TABLES.STATUS, updateData, `id = ${id}`);
+            if (!updated) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Error updating status"
+                });
+            }
+
+            const updatedStatus = await CommonModel.getData(TABLES.STATUS, '*', `id = ${id}`);
+            return res.status(200).json({
+                success: true,
+                message: "Status updated successfully",
+                data: updatedStatus[0]
             });
         }
 
-        const maxSequence = await CommonModel.getData(
-            TABLES.STATUS,
-            'MAX(sequence) as max_seq',
-            "1=1"
-        );
-        
+        const maxSequence = await CommonModel.getData(TABLES.STATUS, 'MAX(sequence) as max_seq', "1=1");
         const nextSequence = (maxSequence?.[0]?.max_seq || 0) + 1;
 
         const insertData = {
-            name: name.trim(),
+            name: trimmedName,
             color: color || '#6B7280',
             sequence: sequence || nextSequence,
             status: status || 'Active',
@@ -137,7 +184,6 @@ export const createStatus = async (req, res) => {
         };
 
         const result = await CommonModel.insertData(TABLES.STATUS, insertData);
-
         if (!result) {
             return res.status(400).json({
                 success: false,
@@ -146,74 +192,10 @@ export const createStatus = async (req, res) => {
         }
 
         const newStatus = await CommonModel.getData(TABLES.STATUS, '*', `id = ${result}`);
-
-        res.status(201).json({
+        return res.status(201).json({
             success: true,
             message: "Status created successfully",
             data: newStatus[0]
-        });
-    } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({
-            success: false,
-            message: "Internal Server Error"
-        });
-    }
-};
-
-export const updateStatus = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { name, color, sequence, status } = req.body;
-
-        const existing = await CommonModel.getData(TABLES.STATUS, '*', `id = ${id}`);
-
-        if (!existing || existing.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Status not found"
-            });
-        }
-
-        const updateData = {
-            updated_on: new Date(),
-            updated_by: req.user?.id || 1
-        };
-
-        if (name && name.trim()) {
-            const nameExists = await CommonModel.getData(
-                TABLES.STATUS,
-                'id',
-                `name = '${name.trim()}' AND id != ${id}`
-            );
-            if (nameExists && nameExists.length > 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Another status with this name exists"
-                });
-            }
-            updateData.name = name.trim();
-        }
-
-        if (color) updateData.color = color;
-        if (sequence) updateData.sequence = sequence;
-        if (status) updateData.status = status;
-
-        const updated = await CommonModel.updateData(TABLES.STATUS, updateData, `id = ${id}`);
-
-        if (!updated) {
-            return res.status(400).json({
-                success: false,
-                message: "Error updating status"
-            });
-        }
-
-        const updatedStatus = await CommonModel.getData(TABLES.STATUS, '*', `id = ${id}`);
-
-        res.status(200).json({
-            success: true,
-            message: "Status updated successfully",
-            data: updatedStatus[0]
         });
     } catch (error) {
         console.error('Error:', error);
@@ -237,17 +219,14 @@ export const deleteStatus = async (req, res) => {
             });
         }
 
-        const leadsUsing = await CommonModel.getData(
-            TABLES.LEADS,
-            'id',
-            `status_id = ${id}`
-        );
-
-        if (leadsUsing && leadsUsing.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: "Cannot delete status used in leads"
-            });
+        if (await hasLeadsTable()) {
+            const leadsUsing = await CommonModel.getData(TABLES.LEADS, 'id', `status_id = ${id}`);
+            if (leadsUsing && leadsUsing.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Cannot delete status used in leads"
+                });
+            }
         }
 
         const deleted = await CommonModel.deleteRecord(TABLES.STATUS, `id = ${id}`);
@@ -328,40 +307,73 @@ export const getSourceById = async (req, res) => {
     }
 };
 
-export const createSource = async (req, res) => {
+// Single save handler for both add and edit — same shape as saveStatus above.
+export const saveSource = async (req, res) => {
     try {
+        const id = req.params.id || req.body.id;
         const { name, sequence, status } = req.body;
+        const trimmedName = name && name.trim() ? name.trim() : null;
 
-        if (!name || !name.trim()) {
+        // name is required to create a new source; on update it's optional
+        // (a caller may just be patching sequence/status).
+        if (!id && !trimmedName) {
             return res.status(400).json({
                 success: false,
                 message: "Source name is required"
             });
         }
 
-        const existing = await CommonModel.getData(
-            TABLES.SOURCE,
-            'id',
-            `name = '${name.trim()}'`
-        );
+        if (trimmedName) {
+            const duplicateCondition = id
+                ? `name = '${trimmedName}' AND id != ${id}`
+                : `name = '${trimmedName}'`;
+            const duplicate = await CommonModel.getData(TABLES.SOURCE, 'id', duplicateCondition);
+            if (duplicate && duplicate.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "A source with this name already exists"
+                });
+            }
+        }
 
-        if (existing && existing.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: "Source already exists"
+        if (id) {
+            const existing = await CommonModel.getData(TABLES.SOURCE, '*', `id = ${id}`);
+            if (!existing || existing.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Source not found"
+                });
+            }
+
+            const updateData = {
+                updated_on: new Date(),
+                updated_by: req.user?.id || 1
+            };
+            if (trimmedName) updateData.name = trimmedName;
+            if (sequence !== undefined && sequence !== null && sequence !== '') updateData.sequence = sequence;
+            if (status) updateData.status = status;
+
+            const updated = await CommonModel.updateData(TABLES.SOURCE, updateData, `id = ${id}`);
+            if (!updated) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Error updating source"
+                });
+            }
+
+            const updatedSource = await CommonModel.getData(TABLES.SOURCE, '*', `id = ${id}`);
+            return res.status(200).json({
+                success: true,
+                message: "Source updated successfully",
+                data: updatedSource[0]
             });
         }
 
-        const maxSequence = await CommonModel.getData(
-            TABLES.SOURCE,
-            'MAX(sequence) as max_seq',
-            "1=1"
-        );
-        
+        const maxSequence = await CommonModel.getData(TABLES.SOURCE, 'MAX(sequence) as max_seq', "1=1");
         const nextSequence = (maxSequence?.[0]?.max_seq || 0) + 1;
 
         const insertData = {
-            name: name.trim(),
+            name: trimmedName,
             sequence: sequence || nextSequence,
             status: status || 'Active',
             created_on: new Date(),
@@ -371,7 +383,6 @@ export const createSource = async (req, res) => {
         };
 
         const result = await CommonModel.insertData(TABLES.SOURCE, insertData);
-
         if (!result) {
             return res.status(400).json({
                 success: false,
@@ -380,73 +391,10 @@ export const createSource = async (req, res) => {
         }
 
         const newSource = await CommonModel.getData(TABLES.SOURCE, '*', `id = ${result}`);
-
-        res.status(201).json({
+        return res.status(201).json({
             success: true,
             message: "Source created successfully",
             data: newSource[0]
-        });
-    } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({
-            success: false,
-            message: "Internal Server Error"
-        });
-    }
-};
-
-export const updateSource = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { name, sequence, status } = req.body;
-
-        const existing = await CommonModel.getData(TABLES.SOURCE, '*', `id = ${id}`);
-
-        if (!existing || existing.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Source not found"
-            });
-        }
-
-        const updateData = {
-            updated_on: new Date(),
-            updated_by: req.user?.id || 1
-        };
-
-        if (name && name.trim()) {
-            const nameExists = await CommonModel.getData(
-                TABLES.SOURCE,
-                'id',
-                `name = '${name.trim()}' AND id != ${id}`
-            );
-            if (nameExists && nameExists.length > 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Another source with this name exists"
-                });
-            }
-            updateData.name = name.trim();
-        }
-
-        if (sequence) updateData.sequence = sequence;
-        if (status) updateData.status = status;
-
-        const updated = await CommonModel.updateData(TABLES.SOURCE, updateData, `id = ${id}`);
-
-        if (!updated) {
-            return res.status(400).json({
-                success: false,
-                message: "Error updating source"
-            });
-        }
-
-        const updatedSource = await CommonModel.getData(TABLES.SOURCE, '*', `id = ${id}`);
-
-        res.status(200).json({
-            success: true,
-            message: "Source updated successfully",
-            data: updatedSource[0]
         });
     } catch (error) {
         console.error('Error:', error);
@@ -470,17 +418,14 @@ export const deleteSource = async (req, res) => {
             });
         }
 
-        const leadsUsing = await CommonModel.getData(
-            TABLES.LEADS,
-            'id',
-            `source_id = ${id}`
-        );
-
-        if (leadsUsing && leadsUsing.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: "Cannot delete source used in leads"
-            });
+        if (await hasLeadsTable()) {
+            const leadsUsing = await CommonModel.getData(TABLES.LEADS, 'id', `source_id = ${id}`);
+            if (leadsUsing && leadsUsing.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Cannot delete source used in leads"
+                });
+            }
         }
 
         const deleted = await CommonModel.deleteRecord(TABLES.SOURCE, `id = ${id}`);

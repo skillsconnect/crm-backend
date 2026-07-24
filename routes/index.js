@@ -28,11 +28,13 @@ const login = await loadRouter('login');
 const leads = await loadRouter('leads');
 const email_campaign = await loadRouter('email-campaign')
 const processs = await loadRouter('processs')
+const internal = await loadRouter('internal')
 
-// route 
+// route
 router.use("/auth", login);
 router.use("/leads", leads)
 router.use("/email-campaign", email_campaign)
 router.use("/processs", processs)
+router.use("/internal", internal)
 
 export default router;

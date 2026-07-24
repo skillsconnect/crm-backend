@@ -1,13 +1,7 @@
 import jwt from "jsonwebtoken";
-const VERSION = process.env.WEBSITE_VERSION;
-
-// import userModel from "../Models_old/Users/UsersModel.js";
-const { default: userModel } = await import(
-  `../Modules/Models/Website/MySQL/${VERSION}/Users/UsersModel.js`
-);
 
 const { default: commonModel } = await import(
-  `../Modules/Models/Website/MySQL/commonModel/commonModel.js`
+  `../modules/models/mysql/commonModel/commonModel.js`
 );
 
 
