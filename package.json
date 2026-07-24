@@ -10,7 +10,12 @@
     "cron:send": "node cron/sendEmails.js",
     "cron:replies": "node cron/checkReplies.js",
     "process-cron": "node cron/processRunner.js",
-    "process-send": "node cron/scheduleProcessEmails.js"
+    "process-send": "node cron/scheduleProcessEmails.js",
+    "migrate:latest": "node database/knex-runner.js latest",
+    "migrate:rollback": "node database/knex-runner.js rollback",
+    "migrate:status": "node database/knex-runner.js status",
+    "migrate:make": "node database/knex-runner.js make",
+    "migrate:unlock": "node database/knex-runner.js unlock"
   },
   "keywords": [],
   "author": "",

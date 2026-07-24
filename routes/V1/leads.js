@@ -1,16 +1,14 @@
 import express from 'express';
 import multer from 'multer';
 import fs from 'fs';
-import { 
+import {
     getAllStatuses,
     getStatusById,
-    createStatus,
-    updateStatus,
+    saveStatus,
     deleteStatus,
     getAllSources,
     getSourceById,
-    createSource,
-    updateSource,
+    saveSource,
     deleteSource,
     getAllLeads,
     getLeadById,
@@ -34,8 +32,13 @@ import {
 } from '../../modules/controllers/V1/processController.js';
 
 import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
+import authenticate from '../../middlewares/Authenticate.js';
 
 const router = express.Router();
+
+// Every route in this router is CRM-staff-only — none of it was actually
+// gated before (this router had no auth middleware at all).
+router.use(authenticate());
 
 // Ensure upload directory exists
 const uploadDir = 'uploads/tmp';
@@ -68,18 +71,18 @@ const upload = multer({
 });
 
 // ==================== LEAD STATUS ROUTES ====================
-router.get('/lead-status', getAllStatuses);
-router.get('/lead-status/:id', getStatusById);
-router.post('/lead-status', createStatus);
-router.put('/lead-status/:id', updateStatus);
-router.delete('/lead-status/:id', deleteStatus);
+router.get('/statuses', getAllStatuses);
+router.get('/statuses/:id', getStatusById);
+router.post('/statuses', saveStatus);
+router.put('/statuses/:id', saveStatus);
+router.delete('/statuses/:id', deleteStatus);
 
 // ==================== LEAD SOURCE ROUTES ====================
-router.get('/lead-source', getAllSources);
-router.get('/lead-source/:id', getSourceById);
-router.post('/lead-source', createSource);
-router.put('/lead-source/:id', updateSource);
-router.delete('/lead-source/:id', deleteSource);
+router.get('/sources', getAllSources);
+router.get('/sources/:id', getSourceById);
+router.post('/sources', saveSource);
+router.put('/sources/:id', saveSource);
+router.delete('/sources/:id', deleteSource);
 
 // ==================== LEAD ROUTES ====================
 router.get('/summary', getLeadSummary);
