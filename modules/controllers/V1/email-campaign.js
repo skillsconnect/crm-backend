@@ -656,12 +656,10 @@ export const createMailingList = async (req, res) => {
             });
         }
 
-        const timestamp = Math.floor(Date.now() / 1000);
-
         const insertData = {
             name: name.trim(),
-            created_at: timestamp,
-            updated_at: timestamp,
+            created_at: new Date(),
+            updated_at: new Date(),
             status: status || 'Active',
             created_by: userId || 0,
             updated_by: userId || 0
@@ -715,7 +713,7 @@ export const updateMailingList = async (req, res) => {
         }
 
         const updateData = {
-            updated_at: Math.floor(Date.now() / 1000),
+            updated_at: new Date(),
             updated_by: userId || 0
         };
 
@@ -1797,7 +1795,7 @@ export const getCampaignFormData = async (req, res) => {
             'crm_mailing_list',
             'id, name',
             "status = 'Active'"
-        );
+        ) || [];
 
         for (let list of lists) {
             const count = await CommonModel.getData(

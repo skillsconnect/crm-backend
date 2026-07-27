@@ -26,10 +26,15 @@ export class EmailSendingService {
       
       let sent = 0;
       let failed = 0;
-      
+      let skipped = 0;
+
+      // Per-sender remaining quota for the rolling 24h window (Gmail anti-spam).
+      // Emails whose sender is exhausted stay 'queued' and are retried next run.
+      const senderQuota = new Map(); // senderId -> remaining sends
+
       // Track campaign IDs to update later
       const campaignStats = new Map(); // campaignId -> { sent, failed, total }
-      
+
       for (const email of queuedEmails) {
         // Initialize campaign stats
         if (!campaignStats.has(email.campaign_id)) {
@@ -37,6 +42,12 @@ export class EmailSendingService {
         }
         
         try {
+          const remaining = await this.getSenderRemainingQuota(email.sender_id, senderQuota);
+          if (remaining <= 0) {
+            skipped++;
+            continue; // leave queued; picked up after the 24h window moves
+          }
+
           // Get recipient
           const recipient = await CommonModel.getData(
             'crm_marketing_email_recipient',
@@ -98,6 +109,7 @@ export class EmailSendingService {
           if (result.success) {
             await this.markEmailSent(email.id, result.messageId, result);
             await this.updateRecipientStatus(recipient[0].id, 'sent');
+            senderQuota.set(email.sender_id, remaining - 1);
             sent++;
             const stats = campaignStats.get(email.campaign_id);
             stats.sent++;
@@ -125,15 +137,38 @@ export class EmailSendingService {
         await this.updateCampaignStatus(campaignId);
       }
       
-      console.log(`📊 Summary: ${sent} sent, ${failed} failed`);
-      return { sent, failed };
-      
+      console.log(`📊 Summary: ${sent} sent, ${failed} failed, ${skipped} deferred (daily limit)`);
+      return { sent, failed, skipped };
+
     } catch (error) {
       console.error('Cron job error:', error);
       return { sent: 0, failed: 0, error: error.message };
     }
   }
-  
+
+  // Remaining sends for a sender in the rolling 24h window, cached per run
+  static async getSenderRemainingQuota(senderId, cache) {
+    if (cache.has(senderId)) return cache.get(senderId);
+
+    const sender = await CommonModel.getData(
+      'crm_sender_emails',
+      'id, daily_limit',
+      `id = ${senderId}`
+    );
+    const dailyLimit = sender?.[0]?.daily_limit > 0 ? sender[0].daily_limit : 100;
+
+    const sentResult = await CommonModel.getData(
+      'crm_campaign_email_logs',
+      'COUNT(*) as total',
+      `sender_id = ${senderId} AND status = 'sent' AND sent_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+    );
+    const sentLast24 = Number(sentResult?.[0]?.total || 0);
+
+    const remaining = Math.max(0, dailyLimit - sentLast24);
+    cache.set(senderId, remaining);
+    return remaining;
+  }
+
   // ✅ New method to update campaign status
   static async updateCampaignStatus(campaignId) {
     try {
@@ -170,16 +205,16 @@ export class EmailSendingService {
         'crm_campaign_mailing_lists',
         '*',
         `campaign_id = ${campaignId}`
-      );
-      
+      ) || [];
+
       for (const campaignList of campaignLists) {
         // Get sent count for this specific mailing list
         const listSentResult = await CommonModel.getData(
           'crm_campaign_email_logs',
           'COUNT(*) as sent',
-          `campaign_id = ${campaignId} AND status = 'sent'`
+          `campaign_id = ${campaignId} AND status = 'sent' AND recipient_id IN (SELECT id FROM crm_marketing_email_recipient WHERE mailing_list_id = ${campaignList.mailing_list_id})`
         );
-        
+
         await CommonModel.updateData(
           'crm_campaign_mailing_lists',
           {
@@ -305,21 +340,34 @@ export class EmailSendingService {
         'crm_campaign_mailing_lists',
         '*',
         `campaign_id = ${campaignId} AND status = 'pending'`
-      );
-      
+      ) || [];
+
+      // Rotate senders and templates round-robin across recipients so the
+      // load spreads over every configured sender/template (anti-spam), the
+      // same way the legacy PHP cron did.
+      const templateIds = String(campaign[0].template_id || '').split(',').map(s => s.trim()).filter(Boolean);
+      const senderIds = String(campaign[0].sender_email_id || '').split(',').map(s => s.trim()).filter(Boolean);
+
+      if (!templateIds.length || !senderIds.length) {
+        throw new Error('Campaign has no templates or senders configured');
+      }
+
       let totalQueued = 0;
-      
+
       for (const campaignList of campaignLists) {
+        // Only fresh recipients — skip already sent/failed/unsubscribed ones
         const recipients = await CommonModel.getData(
           'crm_marketing_email_recipient',
           '*',
-          `mailing_list_id = ${campaignList.mailing_list_id}`
-        );
-        
+          `mailing_list_id = ${campaignList.mailing_list_id} AND mail_status = 'pending'`
+        ) || [];
+
+        let listQueued = 0;
+
         for (const recipient of recipients) {
           await CommonModel.insertData('crm_campaign_email_logs', {
-            template_id: campaign[0].template_id.split(',')[0],
-            sender_id: campaign[0].sender_email_id.split(',')[0],
+            template_id: templateIds[totalQueued % templateIds.length],
+            sender_id: senderIds[totalQueued % senderIds.length],
             recipient_id: recipient.id,
             campaign_id: campaignId,
             recipient_email: recipient.email,
@@ -327,14 +375,22 @@ export class EmailSendingService {
             created_at: new Date(),
             updated_at: new Date()
           });
+
+          await CommonModel.updateData(
+            'crm_marketing_email_recipient',
+            { mail_status: 'queued', updated_at: new Date() },
+            `id = ${recipient.id}`
+          );
+
           totalQueued++;
+          listQueued++;
         }
-        
+
         await CommonModel.updateData(
           'crm_campaign_mailing_lists',
           {
             status: 'in_progress',
-            total_emails: totalQueued,
+            total_emails: listQueued,
             updated_at: new Date()
           },
           `id = ${campaignList.id}`

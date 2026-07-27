@@ -70,7 +70,22 @@ const authenticate = (opts = {}) => async (req, res, next) => {
       }
 
       const user = userResult[0];
-      
+
+      // CRM-specific: is_admin bypasses all crm_staff_permissions checks
+      // (see middlewares/requirePermission.js). Not every ups_users account
+      // is CRM staff, so a missing row just means "no CRM access flags" —
+      // routes that need CRM access still gate on crm_staff_permissions.
+      const crmUserResult = await commonModel.getData(
+        "crm_users",
+        "is_admin, role_id, department, designation",
+        `user_id = ${user.id}`
+      );
+      const crmUser = crmUserResult ? crmUserResult[0] : null;
+      user.is_admin = Boolean(crmUser?.is_admin);
+      user.crm_role_id = crmUser?.role_id ?? null;
+      user.department = crmUser?.department ?? null;
+      user.designation = crmUser?.designation ?? null;
+
       enrichedPayload.permissions = payload.permissions;
       enrichedPayload.user_type = user.user_type;
 
