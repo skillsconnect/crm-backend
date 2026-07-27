@@ -1,6 +1,6 @@
-// modules/services/emailReplyService.js
-import CommonModel from '../models/mysql/commonModel/commonModel.js';
-import GoogleOAuthHelper from '../../helpers/googleOAuthHelper.js';
+// services/emailReplyService.js
+import CommonModel from '../modules/models/mysql/commonModel/commonModel.js';
+import GoogleOAuthHelper from '../helpers/V1/googleOAuthHelper.js';
 
 export class EmailReplyService {
   
