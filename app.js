@@ -8,6 +8,7 @@ import http from 'http';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import { setupWebSocket } from './helpers/V1/websocket.js';
+import { startDemoReminderScheduler } from './services/demoReminderScheduler.js';
 const { consumerSendMailLog ,consumerExcelToExport  } = await import(`./rabbitmq/consumer.js`);
 
 const Website_ver = process.env.WEBSITE_VERSION;
@@ -30,7 +31,7 @@ const PORT = process.env.PORT || 6004;
 app.use(cors({
   origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
@@ -94,6 +95,11 @@ app.use("/crm", CRMRoutes);
 // WebSocket + HTTP server
 const server = http.createServer(app);
 setupWebSocket(server);
+
+// Runs in-process so it shares the live WebSocket connection map above —
+// see services/demoReminderScheduler.js for why this can't be a standalone
+// cron script like the ones in cron/.
+startDemoReminderScheduler();
 
 // Start server
 server.listen(PORT, () => {

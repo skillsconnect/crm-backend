@@ -1,5 +1,6 @@
 import CommonModel from '../../../modules/models/mysql/commonModel/commonModel.js';
 import { getProcessEmailContent } from '../../../helpers/V1/email_content.helper.js';
+import db from '../../../config/knex.js';
 
 const TABLES = {
     PROCESS: 'crm_process',
@@ -128,8 +129,9 @@ export const getAllProcesses = async (req, res) => {
             'asc'
         );
 
-        // Format for frontend with display name
-        const formattedProcesses = processes.map(p => ({
+        // CommonModel.getData returns `false` (not []) when there are no
+        // matching rows — guard before mapping.
+        const formattedProcesses = (processes || []).map(p => ({
             id: p.id,
             sequence: p.sequence,
             name: p.process_name,
@@ -395,7 +397,7 @@ export const getAllProcessesWithSequence = async (req, res) => {
             'asc'
         );
 
-        const formattedProcesses = processes.map(p => ({
+        const formattedProcesses = (processes || []).map(p => ({
             id: p.id,
             sequence: p.sequence,
             name: p.process_name,
@@ -415,6 +417,53 @@ export const getAllProcessesWithSequence = async (req, res) => {
             success: false,
             message: "Internal Server Error"
         });
+    }
+};
+
+// ==================== PROCESS FLOW MAP ====================
+
+// GET /process/flow — the active P1..Pn pipeline in sequence order, each step
+// enriched with how many leads are currently sitting at that step (by
+// email_sent state), so the flow map shows the live pipeline, not just the
+// abstract step definitions.
+export const getProcessFlow = async (req, res) => {
+    try {
+        const steps = await db(TABLES.PROCESS)
+            .select('id', 'sequence', 'process_name', 'communication_mode', 'email_subject', 'status')
+            .where('status', 'Active')
+            .orderBy('sequence', 'asc');
+
+        if (!steps.length) {
+            return res.status(200).json({ success: true, data: [] });
+        }
+
+        const stepIds = steps.map((s) => s.id);
+        const counts = await db(TABLES.PROCESS_STAFF)
+            .select('master_process_id', 'email_sent')
+            .whereIn('master_process_id', stepIds)
+            .count('id as total')
+            .groupBy('master_process_id', 'email_sent');
+
+        const countsByStep = new Map();
+        for (const row of counts) {
+            if (!countsByStep.has(row.master_process_id)) {
+                countsByStep.set(row.master_process_id, { pending: 0, sent: 0, failed: 0, total: 0 });
+            }
+            const bucket = countsByStep.get(row.master_process_id);
+            const key = ['pending', 'sent', 'failed'].includes(row.email_sent) ? row.email_sent : 'pending';
+            bucket[key] += Number(row.total);
+            bucket.total += Number(row.total);
+        }
+
+        const data = steps.map((step) => ({
+            ...step,
+            leads: countsByStep.get(step.id) || { pending: 0, sent: 0, failed: 0, total: 0 },
+        }));
+
+        res.status(200).json({ success: true, data });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
 
@@ -572,6 +621,153 @@ export const deleteLeadProcess = async (req, res) => {
         res.status(200).json({
             success: true,
             message: "Lead process deleted successfully"
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({
+            success: false,
+            message: "Internal Server Error"
+        });
+    }
+};
+
+// ==================== PROCESS DETAILS (per-lead automation editor) ====================
+
+// GET /process/details?master_process_id=&lead_id= — returns both the
+// unmodified master template (processMaster) and the lead's saved/customized
+// assignment if one exists (process), so the drawer can offer "reset to
+// template" without losing the lead-specific edits.
+export const getProcessDetails = async (req, res) => {
+    try {
+        const { master_process_id, lead_id } = req.query;
+
+        if (!master_process_id || !lead_id) {
+            return res.status(400).json({
+                success: false,
+                message: "master_process_id and lead_id are required"
+            });
+        }
+
+        const processMaster = await CommonModel.getData(
+            TABLES.PROCESS,
+            '*',
+            `id = ${master_process_id}`
+        );
+
+        if (!processMaster || processMaster.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Process not found"
+            });
+        }
+
+        const existing = await CommonModel.getData(
+            TABLES.PROCESS_STAFF,
+            '*',
+            `lead_id = ${lead_id} AND master_process_id = ${master_process_id}`
+        );
+
+        res.status(200).json({
+            success: true,
+            data: {
+                processMaster: processMaster[0],
+                process: (existing && existing.length > 0) ? existing[0] : null
+            }
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({
+            success: false,
+            message: "Internal Server Error"
+        });
+    }
+};
+
+// POST /process/details — create or update the lead's automation assignment
+// for a given process step. Mirrors assignProcessToLead but accepts the
+// edited content/schedule/communication-mode straight from the drawer.
+export const saveProcessDetails = async (req, res) => {
+    try {
+        const {
+            lead_id, master_process_id, process_name,
+            email_subject, email_content, whatsapp_content,
+            status, contact_date_time, email, whatsapp
+        } = req.body;
+
+        if (!lead_id || !master_process_id) {
+            return res.status(400).json({
+                success: false,
+                message: "lead_id and master_process_id are required"
+            });
+        }
+
+        const masterProcess = await CommonModel.getData(
+            TABLES.PROCESS,
+            '*',
+            `id = ${master_process_id}`
+        );
+
+        if (!masterProcess || masterProcess.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Process not found"
+            });
+        }
+
+        const modes = [];
+        if (email) modes.push('email');
+        if (whatsapp) modes.push('whatsapp');
+
+        const existing = await CommonModel.getData(
+            TABLES.PROCESS_STAFF,
+            '*',
+            `lead_id = ${lead_id} AND master_process_id = ${master_process_id}`
+        );
+
+        const dataToSave = {
+            lead_id,
+            master_process_id,
+            sequence: masterProcess[0].sequence,
+            process_name: process_name || masterProcess[0].process_name,
+            email_subject: email_subject ?? masterProcess[0].email_subject,
+            email_content: email_content ?? masterProcess[0].email_content,
+            whatsapp_content: whatsapp_content ?? masterProcess[0].whatsapp_content,
+            communication_mode: modes.length ? modes.join(',') : 'email',
+            staff_id: req.user?.id || 1,
+            contact_date_time: contact_date_time || null,
+            status: status || 'Active',
+            updated_on: new Date(),
+            updated_by: req.user?.id || 1
+        };
+
+        let result;
+        if (existing && existing.length > 0) {
+            // Re-editing a step that already sent resets it back to pending
+            // so the scheduler picks up the new content/date.
+            dataToSave.email_sent = 'pending';
+            result = await CommonModel.updateData(
+                TABLES.PROCESS_STAFF,
+                dataToSave,
+                `id = ${existing[0].id}`
+            );
+        } else {
+            dataToSave.email_sent = 'pending';
+            dataToSave.created_on = new Date();
+            dataToSave.created_by = req.user?.id || 1;
+            result = await CommonModel.insertData(TABLES.PROCESS_STAFF, dataToSave);
+        }
+
+        if (!result) {
+            return res.status(400).json({
+                success: false,
+                message: "Error saving process automation"
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Automation workflow saved successfully",
+            data: { lead_id, master_process_id }
         });
     } catch (error) {
         console.error('Error:', error);

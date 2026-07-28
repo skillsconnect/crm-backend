@@ -1,234 +1,151 @@
-<<<<<<< HEAD
-import Router from 'express';
-import multer from 'multer';
-import {
-	getAllLeads,
-	getLeadFormData,
-	createLead,
-	simulateLeadsImport,
-	importLeadsCSV,
-	bulkAction,
-	markAsLost,
-	unmarkAsLost,
-	markAsJunk,
-	unmarkAsJunk,
-	convertToCustomer,
-} from '../../modules/controllers/V1/leads.js';
-import {
-	listLeads,
-	getLeadDetail,
-	updateLeadRest,
-	deleteLeadRest,
-	addLeadActivityRest,
-	addLeadNoteRest,
-	deleteLeadNoteRest,
-	listLeadRemindersRest,
-	createLeadReminderRest,
-	updateLeadReminderRest,
-	deleteLeadReminderRest,
-	getKanbanBoard,
-	updateLeadKanbanStatus,
-	bulkActionRest,
-	listLeadStatusesRest,
-	createLeadStatusRest,
-	updateLeadStatusRest,
-	deleteLeadStatusRest,
-	reorderLeadStatusesRest,
-	listLeadSourcesRest,
-	createLeadSourceRest,
-	updateLeadSourceRest,
-	deleteLeadSourceRest,
-	listTagsRest,
-	createTagRest,
-	updateTagRest,
-	deleteTagRest,
-	assignLeadTagsRest,
-	exportLeadsRest,
-	ocrBusinessCardRest,
-} from '../../modules/controllers/V1/leads-rest.js';
-import { uploadCSV, parseCSV } from '../../middlewares/csvMiddleware.js';
-
-const router = Router();
-const uploadBusinessCard = multer({ dest: 'uploads/tmp/' }).fields([
-	{ name: 'business_card', maxCount: 1 },
-	{ name: 'file', maxCount: 1 },
-]);
-
-// Legacy endpoints retained for compatibility with existing frontend references.
-router.get('/getAllLeads', getAllLeads);
-router.post('/bulk_action', async (req, res, next) => {
-	try {
-		await bulkAction(req, res);
-	} catch (err) {
-		next(err);
-	}
-});
-
-// REST list/create/update/delete
-router.get('/', listLeads);
-router.get('/form-data', getLeadFormData);
-router.post('/', createLead);
-router.get('/export', exportLeadsRest);
-
-// Kanban
-router.get('/kanban', getKanbanBoard);
-
-// Import/Export
-router.post('/import/simulate', uploadCSV, parseCSV, simulateLeadsImport);
-router.post('/import', uploadCSV, parseCSV, importLeadsCSV);
-
-// OCR + AI business card extraction
-router.post('/ocr/business-card', uploadBusinessCard, ocrBusinessCardRest);
-
-// Bulk actions
-router.post('/bulk-actions', bulkActionRest);
-
-// Master: statuses
-router.get('/statuses', listLeadStatusesRest);
-router.post('/statuses', createLeadStatusRest);
-router.patch('/statuses/order', reorderLeadStatusesRest);
-router.put('/statuses/:statusId', updateLeadStatusRest);
-router.delete('/statuses/:statusId', deleteLeadStatusRest);
-
-// Master: sources
-router.get('/sources', listLeadSourcesRest);
-router.post('/sources', createLeadSourceRest);
-router.put('/sources/:sourceId', updateLeadSourceRest);
-router.delete('/sources/:sourceId', deleteLeadSourceRest);
-
-// Master: tags
-router.get('/tags', listTagsRest);
-router.post('/tags', createTagRest);
-router.put('/tags/:tagId', updateTagRest);
-router.delete('/tags/:tagId', deleteTagRest);
-
-// Lead detail panel resources
-router.get('/:id', getLeadDetail);
-router.put('/:id', updateLeadRest);
-router.delete('/:id', deleteLeadRest);
-router.post('/:id/activity', addLeadActivityRest);
-router.post('/:id/notes', addLeadNoteRest);
-router.delete('/:id/notes/:noteId', deleteLeadNoteRest);
-router.get('/:id/reminders', listLeadRemindersRest);
-router.post('/:id/reminders', createLeadReminderRest);
-router.put('/:id/reminders/:reminderId', updateLeadReminderRest);
-router.delete('/:id/reminders/:reminderId', deleteLeadReminderRest);
-router.post('/:id/tags', assignLeadTagsRest);
-
-// Legacy action mappings converted to REST paths
-router.patch('/:id/status', updateLeadKanbanStatus);
-router.patch('/:id/lost', markAsLost);
-router.patch('/:id/unlost', unmarkAsLost);
-router.patch('/:id/junk', markAsJunk);
-router.patch('/:id/unjunk', unmarkAsJunk);
-router.post('/:id/convert', convertToCustomer);
-=======
 import express from 'express';
 import multer from 'multer';
 import fs from 'fs';
-import { 
+import {
     getAllStatuses,
     getStatusById,
-    createStatus,
-    updateStatus,
+    saveStatus,
     deleteStatus,
     getAllSources,
     getSourceById,
-    createSource,
-    updateSource,
+    saveSource,
     deleteSource,
+    getAllTags,
+    createTag,
+    updateTag,
+    deleteTag,
+    assignLeadTags,
+    getSavedFilters,
+    createSavedFilter,
+    deleteSavedFilter,
+    getLeadFormData,
     getAllLeads,
+    getLeadsKanban,
+    updateLeadKanbanStatus,
     getLeadById,
     createLead,
     updateLead,
     deleteLead,
-    getLeadSummary,
-    bulkDeleteLeads,
+    bulkActionLeads,
+    addLeadNote,
+    deleteLeadNote,
+    addLeadActivity,
+    getLeadReminders,
+    addLeadReminder,
+    updateLeadReminder,
+    deleteLeadReminder,
+    markLeadLost,
+    unmarkLeadLost,
+    markLeadJunk,
+    unmarkLeadJunk,
+    convertLeadToCustomer,
+    simulateLeadsImportCSV,
     importLeadsCSV,
     exportLeadsCSV,
-    getImportTemplate,
-    decryptPDF,
-    extractFromImageOrPDF
+    ocrBusinessCard,
 } from '../../modules/controllers/V1/leadController.js';
 
-// ✅ Import process functions
-import { 
-    assignProcessToLead,
-    getLeadProcesses,
-    deleteLeadProcess
-} from '../../modules/controllers/V1/processController.js';
-
 import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
+import authenticate from '../../middlewares/Authenticate.js';
+import requirePermission from '../../middlewares/requirePermission.js';
 
 const router = express.Router();
 
-// Ensure upload directory exists
-const uploadDir = 'uploads/tmp';
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+// Every route in this router is CRM-staff-only.
+router.use(authenticate());
+
+const view = requirePermission('leads', 'view');
+const create = requirePermission('leads', 'create');
+const edit = requirePermission('leads', 'edit');
+const del = requirePermission('leads', 'delete');
+
+const businessCardDir = 'uploads/business_cards';
+if (!fs.existsSync(businessCardDir)) {
+    fs.mkdirSync(businessCardDir, { recursive: true });
 }
 
-// Configure multer
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadDir)
+const businessCardStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, businessCardDir),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + '-' + file.originalname);
     },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname)
-    }
 });
 
-const upload = multer({ 
-    storage: storage,
+const uploadBusinessCard = multer({
+    storage: businessCardStorage,
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
-        const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
-        if (allowedTypes.includes(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only images and PDF files are allowed'));
-        }
-    }
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+        if (allowedTypes.includes(file.mimetype)) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
+    },
 });
 
+// ==================== LEAD FORM DATA ====================
+router.get('/form-data', view, getLeadFormData);
+
 // ==================== LEAD STATUS ROUTES ====================
-router.get('/lead-status', getAllStatuses);
-router.get('/lead-status/:id', getStatusById);
-router.post('/lead-status', createStatus);
-router.put('/lead-status/:id', updateStatus);
-router.delete('/lead-status/:id', deleteStatus);
+router.get('/statuses', view, getAllStatuses);
+router.get('/statuses/:id', view, getStatusById);
+router.post('/statuses', edit, saveStatus);
+router.put('/statuses/:id', edit, saveStatus);
+router.delete('/statuses/:id', edit, deleteStatus);
 
 // ==================== LEAD SOURCE ROUTES ====================
-router.get('/lead-source', getAllSources);
-router.get('/lead-source/:id', getSourceById);
-router.post('/lead-source', createSource);
-router.put('/lead-source/:id', updateSource);
-router.delete('/lead-source/:id', deleteSource);
+router.get('/sources', view, getAllSources);
+router.get('/sources/:id', view, getSourceById);
+router.post('/sources', edit, saveSource);
+router.put('/sources/:id', edit, saveSource);
+router.delete('/sources/:id', edit, deleteSource);
 
-// ==================== LEAD ROUTES ====================
-router.get('/summary', getLeadSummary);
-router.get('/', getAllLeads);
-router.get('/:id', getLeadById);
-router.post('/', createLead);
-router.put('/:id', updateLead);
-router.delete('/:id', deleteLead);
-router.post('/bulk-delete', bulkDeleteLeads);
+// ==================== LEAD TAGS ====================
+router.get('/tags', view, getAllTags);
+router.post('/tags', edit, createTag);
+router.put('/tags/:tagId', edit, updateTag);
+router.delete('/tags/:tagId', edit, deleteTag);
 
-// ==================== LEAD PROCESS ASSIGNMENT ROUTES ====================
-// ✅ ADD THESE ROUTES
-router.post('/assign-process', assignProcessToLead);
-router.get('/:lead_id/processes', getLeadProcesses);
-router.delete('/:lead_id/processes/:process_id', deleteLeadProcess);
+// ==================== LEAD KANBAN (before /:id routes) ====================
+router.get('/kanban', view, getLeadsKanban);
 
-// ==================== LEAD IMPORT/EXPORT ====================
-router.get('/export/template', getImportTemplate);
-router.post('/import', uploadCSV, parseCSV, validateCSV, importLeadsCSV);
-router.get('/export/csv', exportLeadsCSV);
+// ==================== LEAD SAVED FILTERS (before /:id routes) ====================
+// Personal to the logged-in user — no feature permission needed beyond login.
+router.get('/saved-filters', getSavedFilters);
+router.post('/saved-filters', createSavedFilter);
+router.delete('/saved-filters/:id', deleteSavedFilter);
 
-// ==================== OCR EXTRACTION ====================
-router.post('/extract', upload.single('file'), extractFromImageOrPDF);
-router.post('/decrypt-pdf', upload.single('file'), decryptPDF);
->>>>>>> 368cdfcafcf3842b3e88e7e77977738ba1903a89
+// ==================== LEAD IMPORT/EXPORT (before /:id routes) ====================
+router.post('/import/simulate', create, uploadCSV, parseCSV, validateCSV, simulateLeadsImportCSV);
+router.post('/import', create, uploadCSV, parseCSV, validateCSV, importLeadsCSV);
+router.get('/export', view, exportLeadsCSV);
+
+// ==================== OCR ====================
+router.post('/ocr/business-card', create, uploadBusinessCard.single('business_card'), ocrBusinessCard);
+
+// ==================== LEAD BULK ACTIONS ====================
+router.post('/bulk-actions', edit, bulkActionLeads);
+
+// ==================== LEAD CRUD ====================
+router.get('/', view, getAllLeads);
+router.post('/', create, createLead);
+router.get('/:id', view, getLeadById);
+router.put('/:id', edit, updateLead);
+router.delete('/:id', del, deleteLead);
+
+// ==================== LEAD DETAIL SUB-RESOURCES ====================
+router.patch('/:id/status', edit, updateLeadKanbanStatus);
+router.post('/:id/activity', edit, addLeadActivity);
+router.post('/:id/notes', edit, addLeadNote);
+router.delete('/:id/notes/:noteId', edit, deleteLeadNote);
+router.get('/:id/reminders', view, getLeadReminders);
+router.post('/:id/reminders', edit, addLeadReminder);
+router.put('/:id/reminders/:reminderId', edit, updateLeadReminder);
+router.delete('/:id/reminders/:reminderId', edit, deleteLeadReminder);
+router.patch('/:id/lost', edit, markLeadLost);
+router.patch('/:id/unlost', edit, unmarkLeadLost);
+router.patch('/:id/junk', edit, markLeadJunk);
+router.patch('/:id/unjunk', edit, unmarkLeadJunk);
+router.post('/:id/convert', edit, convertLeadToCustomer);
+router.post('/:id/tags', edit, assignLeadTags);
 
 export default router;
