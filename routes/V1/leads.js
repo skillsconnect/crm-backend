@@ -43,6 +43,12 @@ import {
     importLeadsCSV,
     exportLeadsCSV,
     ocrBusinessCard,
+    uploadLeadAttachment,
+    downloadLeadAttachment,
+    deleteLeadAttachment,
+    uploadLeadAudioNote,
+    streamLeadAudioNote,
+    deleteLeadAudioNote,
 } from '../../modules/controllers/V1/leadController.js';
 
 import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
@@ -79,6 +85,22 @@ const uploadBusinessCard = multer({
         const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
         if (allowedTypes.includes(file.mimetype)) cb(null, true);
         else cb(new Error('Only image files are allowed'));
+    },
+});
+
+// Attachments and audio notes are held in memory just long enough to stream
+// straight to Azure Blob Storage — no local uploads/ directory for these two.
+const uploadAttachment = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 15 * 1024 * 1024 },
+});
+
+const uploadAudioNote = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if ((file.mimetype || '').startsWith('audio/')) cb(null, true);
+        else cb(new Error('Only audio files are allowed'));
     },
 });
 
@@ -147,5 +169,15 @@ router.patch('/:id/junk', edit, markLeadJunk);
 router.patch('/:id/unjunk', edit, unmarkLeadJunk);
 router.post('/:id/convert', edit, convertLeadToCustomer);
 router.post('/:id/tags', edit, assignLeadTags);
+
+// ==================== LEAD ATTACHMENTS ====================
+router.post('/:id/attachments', edit, uploadAttachment.single('file'), uploadLeadAttachment);
+router.get('/:id/attachments/:attachmentId/download', view, downloadLeadAttachment);
+router.delete('/:id/attachments/:attachmentId', edit, deleteLeadAttachment);
+
+// ==================== LEAD AUDIO NOTES ====================
+router.post('/:id/audio-notes', edit, uploadAudioNote.single('audio'), uploadLeadAudioNote);
+router.get('/:id/audio-notes/:audioId/stream', view, streamLeadAudioNote);
+router.delete('/:id/audio-notes/:audioId', edit, deleteLeadAudioNote);
 
 export default router;

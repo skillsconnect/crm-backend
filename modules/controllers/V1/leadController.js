@@ -3,6 +3,7 @@ import path from 'path';
 import { parse } from 'json2csv';
 import db from '../../../config/knex.js';
 import OCRService from '../../../services/ocrService.js';
+import { uploadToAzureBlob, getAzureBlobStream, deleteBlobByUrl } from '../../../helpers/V1/azureBlobService.js';
 
 const TABLES = {
     LEADS: 'crm_leads',
@@ -12,6 +13,7 @@ const TABLES = {
     NOTES: 'crm_lead_notes',
     REMINDERS: 'crm_lead_reminders',
     ATTACHMENTS: 'crm_lead_attachments',
+    AUDIO_NOTES: 'crm_lead_audio_notes',
     TAGS: 'crm_tags',
     PROCESS: 'crm_process',
     PROCESS_STAFF: 'crm_process_staff',
@@ -643,6 +645,8 @@ export const getLeadById = async (req, res) => {
         const notes = await db(TABLES.NOTES).where('lead_id', id).orderBy('dateadded', 'desc');
         const activity = await db(TABLES.ACTIVITY).where('lead_id', id).orderBy('date', 'desc');
         const reminders = await db(TABLES.REMINDERS).where('lead_id', id).orderBy('date', 'asc');
+        const attachments = await db(TABLES.ATTACHMENTS).where('lead_id', id).orderBy('dateadded', 'desc');
+        const audioNotes = await db(TABLES.AUDIO_NOTES).where('lead_id', id).orderBy('dateadded', 'desc');
         const process = await db(TABLES.PROCESS_STAFF).where('lead_id', id).orderBy('id', 'desc').first();
 
         res.status(200).json({
@@ -652,6 +656,8 @@ export const getLeadById = async (req, res) => {
                 notes,
                 activity,
                 reminders,
+                attachments,
+                audioNotes,
                 process: process ? {
                     master_process_id: process.master_process_id,
                     communication_mode: process.communication_mode,
@@ -958,6 +964,141 @@ export const deleteLeadReminder = async (req, res) => {
         const deleted = await db(TABLES.REMINDERS).where({ id: reminderId, lead_id: id }).del();
         if (!deleted) return res.status(404).json({ success: false, message: "Reminder not found" });
         res.status(200).json({ success: true, message: "Reminder deleted successfully" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// ==================== LEAD ATTACHMENTS ====================
+
+export const uploadLeadAttachment = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+        const existing = await db(TABLES.LEADS).where('id', id).first();
+        if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
+
+        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}-${req.file.originalname}`;
+        const blobUrl = await uploadToAzureBlob(uniqueName, req.file.buffer, req.file.mimetype, 'crm/lead_attachments');
+        if (!blobUrl) return res.status(502).json({ success: false, message: "Failed to upload file to storage" });
+
+        const [insertedId] = await db(TABLES.ATTACHMENTS).insert({
+            lead_id: id,
+            file_name: req.file.originalname,
+            filetype: req.file.mimetype,
+            file_path: blobUrl,
+            staffid: currentUserId(req),
+            dateadded: new Date(),
+        });
+
+        await logActivity(id, `Attachment "${req.file.originalname}" uploaded by ${currentUserName(req)}`, req);
+
+        const newAttachment = await db(TABLES.ATTACHMENTS).where('id', insertedId).first();
+        res.status(201).json({ success: true, message: "Attachment uploaded successfully", data: newAttachment });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const downloadLeadAttachment = async (req, res) => {
+    try {
+        const { id, attachmentId } = req.params;
+        const attachment = await db(TABLES.ATTACHMENTS).where({ id: attachmentId, lead_id: id }).first();
+        if (!attachment) return res.status(404).json({ success: false, message: "Attachment not found" });
+        if (!attachment.file_path) return res.status(404).json({ success: false, message: "File is missing on the server" });
+
+        const { stream, contentType } = await getAzureBlobStream(attachment.file_path);
+        res.setHeader('Content-Type', contentType || attachment.filetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${attachment.file_name}"`);
+        stream.pipe(res);
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(404).json({ success: false, message: "File is missing on the server" });
+    }
+};
+
+export const deleteLeadAttachment = async (req, res) => {
+    try {
+        const { id, attachmentId } = req.params;
+        const attachment = await db(TABLES.ATTACHMENTS).where({ id: attachmentId, lead_id: id }).first();
+        if (!attachment) return res.status(404).json({ success: false, message: "Attachment not found" });
+
+        await db(TABLES.ATTACHMENTS).where('id', attachmentId).del();
+        if (attachment.file_path) await deleteBlobByUrl(attachment.file_path);
+
+        res.status(200).json({ success: true, message: "Attachment deleted successfully" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// ==================== LEAD AUDIO NOTES ====================
+
+export const uploadLeadAudioNote = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!req.file) return res.status(400).json({ success: false, message: "No audio file uploaded" });
+
+        const existing = await db(TABLES.LEADS).where('id', id).first();
+        if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
+
+        const fileName = req.file.originalname || `audio-note-${Date.now()}.webm`;
+        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}-${fileName}`;
+        const blobUrl = await uploadToAzureBlob(uniqueName, req.file.buffer, req.file.mimetype, 'crm/lead_audio_notes');
+        if (!blobUrl) return res.status(502).json({ success: false, message: "Failed to upload audio note to storage" });
+
+        const durationSeconds = req.body?.duration_seconds ? Number(req.body.duration_seconds) : null;
+
+        const [insertedId] = await db(TABLES.AUDIO_NOTES).insert({
+            lead_id: id,
+            file_name: fileName,
+            file_path: blobUrl,
+            mime_type: req.file.mimetype,
+            duration_seconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
+            staffid: currentUserId(req),
+            dateadded: new Date(),
+        });
+
+        await logActivity(id, `Audio note recorded by ${currentUserName(req)}`, req);
+
+        const newAudioNote = await db(TABLES.AUDIO_NOTES).where('id', insertedId).first();
+        res.status(201).json({ success: true, message: "Audio note saved successfully", data: newAudioNote });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const streamLeadAudioNote = async (req, res) => {
+    try {
+        const { id, audioId } = req.params;
+        const audioNote = await db(TABLES.AUDIO_NOTES).where({ id: audioId, lead_id: id }).first();
+        if (!audioNote) return res.status(404).json({ success: false, message: "Audio note not found" });
+        if (!audioNote.file_path) return res.status(404).json({ success: false, message: "Audio file is missing on the server" });
+
+        const { stream, contentType } = await getAzureBlobStream(audioNote.file_path);
+        res.setHeader('Content-Type', contentType || audioNote.mime_type || 'audio/webm');
+        stream.pipe(res);
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(404).json({ success: false, message: "Audio file is missing on the server" });
+    }
+};
+
+export const deleteLeadAudioNote = async (req, res) => {
+    try {
+        const { id, audioId } = req.params;
+        const audioNote = await db(TABLES.AUDIO_NOTES).where({ id: audioId, lead_id: id }).first();
+        if (!audioNote) return res.status(404).json({ success: false, message: "Audio note not found" });
+
+        await db(TABLES.AUDIO_NOTES).where('id', audioId).del();
+        if (audioNote.file_path) await deleteBlobByUrl(audioNote.file_path);
+
+        res.status(200).json({ success: true, message: "Audio note deleted successfully" });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ success: false, message: "Internal Server Error" });
