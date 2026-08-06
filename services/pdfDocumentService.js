@@ -25,8 +25,8 @@ export const streamBillingDocumentPdf = (res, { kind, doc, items, taxRateById, p
     res.setHeader('Content-Disposition', `inline; filename=${kind}-${doc.id}.pdf`);
     pdf.pipe(res);
 
-    const title = kind === 'invoice' ? 'INVOICE' : 'PROPOSAL';
-    const number = kind === 'invoice' ? doc.invoice_number : `PROP-${String(doc.id).padStart(4, '0')}`;
+    const title = kind === 'invoice' ? 'INVOICE' : kind === 'credit_note' ? 'CREDIT NOTE' : 'PROPOSAL';
+    const number = kind === 'invoice' ? doc.invoice_number : kind === 'credit_note' ? doc.credit_note_number : `PROP-${String(doc.id).padStart(4, '0')}`;
 
     pdf.fontSize(20).font('Helvetica-Bold').fillColor('#0d7282').text('SkillsConnect', 50, 50);
     pdf.fontSize(22).font('Helvetica-Bold').fillColor('#1e293b').text(title, 0, 50, { align: 'right' });
@@ -43,7 +43,8 @@ export const streamBillingDocumentPdf = (res, { kind, doc, items, taxRateById, p
     if (party.address) pdf.text(party.address, 50, pdf.y, { width: 250 });
 
     const rightColX = 350;
-    pdf.fontSize(9).fillColor('#64748b').text(kind === 'invoice' ? 'INVOICE DATE' : 'PROPOSAL DATE', rightColX, infoTop);
+    const dateLabel = kind === 'invoice' ? 'INVOICE DATE' : kind === 'credit_note' ? 'CREDIT NOTE DATE' : 'PROPOSAL DATE';
+    pdf.fontSize(9).fillColor('#64748b').text(dateLabel, rightColX, infoTop);
     pdf.fontSize(10).fillColor('#1e293b').text(formatDate(doc.date), rightColX, infoTop + 12);
 
     if (kind === 'invoice' && doc.due_date) {
@@ -114,6 +115,10 @@ export const streamBillingDocumentPdf = (res, { kind, doc, items, taxRateById, p
     if (kind === 'invoice' && Number(doc.amount_paid) > 0) {
         addTotalRow('Paid', doc.amount_paid);
         addTotalRow('Balance Due', Math.max(0, Number(doc.total) - Number(doc.amount_paid)), true);
+    }
+    if (kind === 'credit_note' && Number(doc.amount_used) > 0) {
+        addTotalRow('Applied', doc.amount_used);
+        addTotalRow('Remaining Credit', Math.max(0, Number(doc.total) - Number(doc.amount_used)), true);
     }
 
     if (doc.terms || doc.client_note) {

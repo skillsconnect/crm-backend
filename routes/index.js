@@ -34,10 +34,12 @@ const profile = await loadRouter('profile')
 const clients = await loadRouter('clients')
 const proposals = await loadRouter('proposals')
 const invoices = await loadRouter('invoices')
+const creditNotes = await loadRouter('creditNotes')
 const demos = await loadRouter('demos')
 const dashboard = await loadRouter('dashboard')
 const staff = await loadRouter('staff')
 const roles = await loadRouter('roles')
+const publicRoutes = await loadRouter('public')
 
 // route
 router.use("/auth", login);
@@ -50,9 +52,11 @@ router.use("/profile", profile)
 router.use("/clients", clients)
 router.use("/proposals", proposals)
 router.use("/invoices", invoices)
+router.use("/credit-notes", creditNotes)
 router.use("/demos", demos)
 router.use("/dashboard", dashboard)
 router.use("/staff", staff)
 router.use("/roles", roles)
+router.use("/public", publicRoutes)
 
 export default router;

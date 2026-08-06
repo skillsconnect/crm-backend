@@ -1,6 +1,7 @@
 import db from '../../../config/knex.js';
 import { calculateTotals } from '../../../helpers/V1/billing_totals.helper.js';
 import { streamBillingDocumentPdf } from '../../../services/pdfDocumentService.js';
+import { computeNextRunDate, generateDueRecurringInvoices } from '../../../services/recurringInvoiceService.js';
 
 const TABLES = {
     INVOICES: 'crm_invoices',
@@ -96,20 +97,30 @@ export const getInvoiceById = async (req, res) => {
         const itemsWithTax = items.map((item) => ({ ...item, tax_name: item.tax_rate_id ? taxRateById.get(Number(item.tax_rate_id))?.name : null }));
         const payments = await db(TABLES.PAYMENTS).where('invoice_id', id).orderBy('payment_date', 'desc');
 
-        res.status(200).json({ success: true, data: { ...invoice, items: itemsWithTax, payments } });
+        let recurringChildren = [];
+        if (invoice.is_recurring && !invoice.recurring_source_invoice_id) {
+            recurringChildren = await db(TABLES.INVOICES).where('recurring_source_invoice_id', id).select('id', 'invoice_number', 'date', 'total', 'status').orderBy('date', 'desc');
+        }
+        const nextRunDate = invoice.is_recurring && !invoice.recurring_source_invoice_id ? computeNextRunDate(invoice) : null;
+
+        res.status(200).json({ success: true, data: { ...invoice, items: itemsWithTax, payments, recurringChildren, nextRunDate } });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
 
+const RECURRING_CYCLES = ['weekly', 'monthly', 'quarterly', 'yearly'];
+
 const buildInvoicePayload = async (body, req) => {
     const { client_id, lead_id, currency, discount_type, discount_percent, adjustment, date, due_date,
-        terms, client_note, admin_note, assigned, items } = body;
+        terms, client_note, admin_note, assigned, items, is_recurring, recurring_cycle, recurring_cycles_total } = body;
 
     const validItems = (Array.isArray(items) ? items : []).filter((i) => i.description?.trim());
     const taxRateById = await loadTaxRateMap();
     const totals = calculateTotals(validItems, { discount_type, discount_percent, adjustment }, taxRateById);
+
+    const recurring = Boolean(is_recurring) && RECURRING_CYCLES.includes(recurring_cycle);
 
     return {
         record: {
@@ -129,6 +140,9 @@ const buildInvoicePayload = async (body, req) => {
             client_note: client_note || null,
             admin_note: admin_note || null,
             assigned: assigned || currentUserId(req),
+            is_recurring: recurring,
+            recurring_cycle: recurring ? recurring_cycle : null,
+            recurring_cycles_total: recurring && recurring_cycles_total ? Number(recurring_cycles_total) : null,
         },
         items: validItems,
     };
@@ -360,5 +374,32 @@ export const downloadInvoicePdf = async (req, res) => {
     } catch (error) {
         console.error('PDF error:', error);
         res.status(500).json({ success: false, message: "Failed to generate PDF" });
+    }
+};
+
+// ==================== RECURRING ====================
+
+export const getRecurringInvoiceTemplates = async (req, res) => {
+    try {
+        const templates = await withPartyJoins(db(`${TABLES.INVOICES} as i`))
+            .where('i.is_recurring', true)
+            .whereNull('i.recurring_source_invoice_id')
+            .orderBy('i.id', 'desc');
+
+        const withNextRun = templates.map((t) => ({ ...t, nextRunDate: computeNextRunDate(t) }));
+        res.status(200).json({ success: true, data: withNextRun });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const runRecurringInvoicesNow = async (req, res) => {
+    try {
+        const generated = await generateDueRecurringInvoices();
+        res.status(200).json({ success: true, message: `Generated ${generated.length} invoice(s)`, data: { generated_ids: generated } });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };

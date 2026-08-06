@@ -10,6 +10,8 @@ import {
     addPayment,
     deletePayment,
     downloadInvoicePdf,
+    getRecurringInvoiceTemplates,
+    runRecurringInvoicesNow,
 } from '../../modules/controllers/V1/invoiceController.js';
 import authenticate from '../../middlewares/Authenticate.js';
 import requirePermission from '../../middlewares/requirePermission.js';
@@ -24,6 +26,11 @@ const edit = requirePermission('invoices', 'edit');
 const del = requirePermission('invoices', 'delete');
 
 router.get('/form-data', view, getFormData);
+
+// Before /:id — otherwise "recurring" would be parsed as an invoice id.
+router.get('/recurring/templates', view, getRecurringInvoiceTemplates);
+router.post('/recurring/run-now', edit, runRecurringInvoicesNow);
+
 router.get('/', view, getAllInvoices);
 router.post('/', create, createInvoice);
 router.get('/:id', view, getInvoiceById);

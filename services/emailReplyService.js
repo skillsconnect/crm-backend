@@ -1,6 +1,10 @@
 // services/emailReplyService.js
 import CommonModel from '../modules/models/mysql/commonModel/commonModel.js';
 import GoogleOAuthHelper from '../helpers/V1/googleOAuthHelper.js';
+import db from '../config/knex.js';
+
+const REPLY_SOURCE_NAME = 'Email Reply';
+const REPLY_TAG_NAME = 'Email Reply';
 
 export class EmailReplyService {
   
@@ -78,7 +82,18 @@ export class EmailReplyService {
             if (type === 'bounce' && bounceRecipient) {
               await this.updateBounceStatus(bounceRecipient, plainText, email.threadId);
             }
-            
+
+            // A genuine reply (not a bounce, not an unrelated inbound email)
+            // from someone who isn't already a lead or client becomes a new
+            // lead — mirrors legacy CRM's reply→lead auto-creation.
+            if (type === 'reply') {
+              try {
+                await this.createLeadFromReplyIfNew(from, subject, plainText);
+              } catch (leadError) {
+                console.error('Reply-to-lead creation failed for', email.id, leadError);
+              }
+            }
+
             processed++;
           }
           
@@ -96,6 +111,67 @@ export class EmailReplyService {
     }
   }
   
+  static parseFromHeader(fromHeader) {
+    const match = String(fromHeader || '').match(/^(.*?)\s*<([^>]+)>$/);
+    if (match) {
+      return { name: match[1].replace(/"/g, '').trim(), email: match[2].trim().toLowerCase() };
+    }
+    const email = String(fromHeader || '').trim().toLowerCase();
+    return { name: '', email };
+  }
+
+  static async findOrCreateReplySourceId() {
+    const existing = await db('crm_lead_source').where('name', REPLY_SOURCE_NAME).first();
+    if (existing) return existing.id;
+    const [id] = await db('crm_lead_source').insert({ name: REPLY_SOURCE_NAME, status: 'Active' });
+    return id;
+  }
+
+  /**
+   * Creates a new lead from a campaign reply, unless the sender already
+   * matches an existing lead or client (by email) — avoids spamming the
+   * pipeline with duplicate leads every time an existing contact replies.
+   */
+  static async createLeadFromReplyIfNew(fromHeader, subject, bodySnippet) {
+    const { name, email } = this.parseFromHeader(fromHeader);
+    if (!email || !email.includes('@')) return null;
+
+    const existingLead = await db('crm_leads').where({ email, is_deleted: false }).first();
+    if (existingLead) return null;
+
+    const existingClient = await db('crm_clients').where('email', email).first();
+    if (existingClient) return null;
+
+    const existingContact = await db('crm_client_contacts').where('email', email).first();
+    if (existingContact) return null;
+
+    const sourceId = await this.findOrCreateReplySourceId();
+    const displayName = name || email.split('@')[0];
+
+    const [leadId] = await db('crm_leads').insert({
+      name: displayName,
+      email,
+      source: sourceId,
+      status: 0,
+      assigned: 0,
+      addedfrom: 1,
+      tags: REPLY_TAG_NAME,
+      description: `Auto-created from an email reply.\nSubject: ${subject || '(no subject)'}\n\n${String(bodySnippet || '').slice(0, 300)}`,
+      dateadded: new Date(),
+    });
+
+    await db('crm_lead_activity_log').insert({
+      lead_id: leadId,
+      description: `Lead auto-created from email reply (${email})`,
+      date: new Date(),
+      staffid: 0,
+      full_name: 'System',
+    });
+
+    console.log(`[email replies] created lead #${leadId} from reply by ${email}`);
+    return leadId;
+  }
+
   static extractPlainText(payload) {
     let body = '';
     

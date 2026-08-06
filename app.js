@@ -9,6 +9,7 @@ import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import { setupWebSocket } from './helpers/V1/websocket.js';
 import { startDemoReminderScheduler } from './services/demoReminderScheduler.js';
+import { startRecurringInvoiceScheduler } from './services/recurringInvoiceService.js';
 const { consumerSendMailLog ,consumerExcelToExport  } = await import(`./rabbitmq/consumer.js`);
 
 const Website_ver = process.env.WEBSITE_VERSION;
@@ -100,6 +101,10 @@ setupWebSocket(server);
 // see services/demoReminderScheduler.js for why this can't be a standalone
 // cron script like the ones in cron/.
 startDemoReminderScheduler();
+
+// Doesn't need the WS map, but kept in-process for simplicity — no separate
+// cron infra to set up locally, and generation is idempotent/cheap to poll.
+startRecurringInvoiceScheduler();
 
 // Start server
 server.listen(PORT, () => {

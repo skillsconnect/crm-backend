@@ -1,6 +1,7 @@
 // helpers/googleOAuthHelper.js
 import { google } from 'googleapis';
 import CommonModel from '../../modules/models/mysql/commonModel/commonModel.js';
+import db from '../../config/knex.js';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -209,6 +210,167 @@ export class GoogleOAuthHelper {
     const oauth2Client = this.getOAuth2Client();
     oauth2Client.setCredentials({ access_token: accessToken });
     return google.gmail({ version: 'v1', auth: oauth2Client });
+  }
+
+  // ==================== STAFF GOOGLE CALENDAR (one-way demo push) ====================
+  // Separate OAuth connection per staff member — shares the same registered
+  // Google redirect URI as the Gmail sender flow above (Google only allows
+  // exchanging a code at the exact URI it was requested for), disambiguated
+  // via `state.type` in the shared callback controller (email-campaign.js's
+  // gmailCallback).
+
+  static getCalendarAuthUrl(staffId) {
+    const oauth2Client = this.getOAuth2Client();
+    const state = Buffer.from(JSON.stringify({ type: 'calendar', staffId })).toString('base64');
+
+    return oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/calendar.events'],
+      state,
+      prompt: 'consent',
+    });
+  }
+
+  static async saveCalendarTokens(staffId, tokens) {
+    const row = {
+      staff_id: staffId,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expiry_date: tokens.expiry_date,
+      token_type: tokens.token_type,
+      scope: tokens.scope,
+      connected: true,
+      last_error: null,
+      connected_at: new Date(),
+    };
+
+    const existing = await db('crm_staff_google_calendar').where('staff_id', staffId).first();
+    if (existing) {
+      // Google only returns a refresh_token on the very first consent — keep
+      // the existing one if this re-auth didn't get a new one.
+      if (!row.refresh_token) row.refresh_token = existing.refresh_token;
+      await db('crm_staff_google_calendar').where('staff_id', staffId).update(row);
+    } else {
+      await db('crm_staff_google_calendar').insert(row);
+    }
+  }
+
+  static async disconnectCalendar(staffId) {
+    await db('crm_staff_google_calendar').where('staff_id', staffId).del();
+  }
+
+  static async getCalendarConnection(staffId) {
+    return db('crm_staff_google_calendar').where('staff_id', staffId).first();
+  }
+
+  static async getValidCalendarAccessToken(staffId) {
+    const connection = await db('crm_staff_google_calendar').where('staff_id', staffId).first();
+    if (!connection || !connection.access_token) return null;
+
+    const needsRefresh = Number(connection.expiry_date) <= Date.now() + 5 * 60 * 1000;
+    if (!needsRefresh) return connection.access_token;
+
+    if (!connection.refresh_token) {
+      await db('crm_staff_google_calendar').where('staff_id', staffId).update({ connected: false, last_error: 'No refresh token — please reconnect' });
+      return null;
+    }
+
+    try {
+      const oauth2Client = this.getOAuth2Client();
+      oauth2Client.setCredentials({ refresh_token: connection.refresh_token });
+      const { credentials } = await oauth2Client.refreshAccessToken();
+
+      await db('crm_staff_google_calendar').where('staff_id', staffId).update({
+        access_token: credentials.access_token,
+        expiry_date: credentials.expiry_date,
+        refresh_token: credentials.refresh_token || connection.refresh_token,
+        token_type: credentials.token_type || connection.token_type,
+      });
+
+      return credentials.access_token;
+    } catch (error) {
+      console.error(`Calendar token refresh failed for staff ${staffId}:`, error.message);
+      await db('crm_staff_google_calendar').where('staff_id', staffId).update({ connected: false, last_error: 'Refresh failed — please reconnect' });
+      return null;
+    }
+  }
+
+  static async getCalendarClient(staffId) {
+    const accessToken = await this.getValidCalendarAccessToken(staffId);
+    if (!accessToken) return null;
+    const oauth2Client = this.getOAuth2Client();
+    oauth2Client.setCredentials({ access_token: accessToken });
+    return google.calendar({ version: 'v3', auth: oauth2Client });
+  }
+
+  /**
+   * Creates a Google Calendar event for a scheduled demo. Returns the new
+   * event's id, or null if the staff member hasn't connected a calendar (or
+   * the push otherwise fails) — callers must treat null as "skip silently,"
+   * never as a reason to fail the demo scheduling itself.
+   */
+  static async createCalendarEvent(staffId, { summary, description, startISO, endISO, attendeeEmail }) {
+    try {
+      const calendar = await this.getCalendarClient(staffId);
+      if (!calendar) return null;
+
+      const connection = await this.getCalendarConnection(staffId);
+      const response = await calendar.events.insert({
+        calendarId: connection.calendar_id || 'primary',
+        requestBody: {
+          summary,
+          description,
+          start: { dateTime: startISO },
+          end: { dateTime: endISO },
+          attendees: attendeeEmail ? [{ email: attendeeEmail }] : undefined,
+        },
+      });
+
+      return response.data.id;
+    } catch (error) {
+      console.error(`createCalendarEvent failed for staff ${staffId}:`, error.message);
+      return null;
+    }
+  }
+
+  static async updateCalendarEvent(staffId, eventId, { summary, description, startISO, endISO }) {
+    try {
+      if (!eventId) return false;
+      const calendar = await this.getCalendarClient(staffId);
+      if (!calendar) return false;
+
+      const connection = await this.getCalendarConnection(staffId);
+      await calendar.events.patch({
+        calendarId: connection.calendar_id || 'primary',
+        eventId,
+        requestBody: {
+          summary,
+          description,
+          start: startISO ? { dateTime: startISO } : undefined,
+          end: endISO ? { dateTime: endISO } : undefined,
+        },
+      });
+      return true;
+    } catch (error) {
+      console.error(`updateCalendarEvent failed for staff ${staffId}:`, error.message);
+      return false;
+    }
+  }
+
+  static async deleteCalendarEvent(staffId, eventId) {
+    try {
+      if (!eventId) return false;
+      const calendar = await this.getCalendarClient(staffId);
+      if (!calendar) return false;
+
+      const connection = await this.getCalendarConnection(staffId);
+      await calendar.events.delete({ calendarId: connection.calendar_id || 'primary', eventId });
+      return true;
+    } catch (error) {
+      // A 410/404 just means it's already gone — not worth surfacing.
+      console.error(`deleteCalendarEvent failed for staff ${staffId}:`, error.message);
+      return false;
+    }
   }
 }
 

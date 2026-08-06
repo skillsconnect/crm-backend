@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import db from '../../../config/knex.js';
+import GoogleOAuthHelper from '../../../helpers/V1/googleOAuthHelper.js';
 
 const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
 
@@ -72,6 +73,43 @@ export const updateMyProfile = async (req, res) => {
             .first();
 
         res.status(200).json({ success: true, message: "Profile updated successfully", data: updated });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// ==================== GOOGLE CALENDAR CONNECTION ====================
+
+export const getCalendarStatus = async (req, res) => {
+    try {
+        const connection = await db('crm_staff_google_calendar').where('staff_id', req.user.id).first();
+        res.status(200).json({
+            success: true,
+            data: connection
+                ? { connected: Boolean(connection.connected), last_error: connection.last_error, connected_at: connection.connected_at }
+                : { connected: false },
+        });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const getCalendarConnectUrl = async (req, res) => {
+    try {
+        const url = GoogleOAuthHelper.getCalendarAuthUrl(req.user.id);
+        res.status(200).json({ success: true, data: { url } });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const disconnectCalendar = async (req, res) => {
+    try {
+        await GoogleOAuthHelper.disconnectCalendar(req.user.id);
+        res.status(200).json({ success: true, message: "Google Calendar disconnected" });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ success: false, message: "Internal Server Error" });
