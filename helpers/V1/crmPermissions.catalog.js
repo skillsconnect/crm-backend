@@ -16,6 +16,7 @@ export const CRM_FEATURES = [
     { key: 'clients', label: 'Clients' },
     { key: 'proposals', label: 'Proposals' },
     { key: 'invoices', label: 'Invoices' },
+    { key: 'credit_notes', label: 'Credit Notes' },
     { key: 'demos', label: 'Demo Scheduling' },
     { key: 'master_data', label: 'Master Data' },
     { key: 'email_campaign', label: 'Email Campaign' },

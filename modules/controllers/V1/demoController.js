@@ -1,5 +1,6 @@
 import db from '../../../config/knex.js';
 import { sendMail } from '../../../helpers/V1/mail.helper.js';
+import GoogleOAuthHelper from '../../../helpers/V1/googleOAuthHelper.js';
 
 const TABLES = {
     DEMOS: 'crm_demo_schedules',
@@ -124,6 +125,52 @@ export const getDemoById = async (req, res) => {
     }
 };
 
+// One-way push only — a staff member without a connected calendar (the
+// common case, since it's opt-in) just gets null back and nothing happens.
+// Never let a calendar failure block scheduling/updating/cancelling a demo.
+const pushDemoToCalendar = async (demo) => {
+    try {
+        const start = new Date(demo.demo_date_time);
+        const end = new Date(start.getTime() + demo.duration_minutes * 60000);
+
+        const eventId = await GoogleOAuthHelper.createCalendarEvent(demo.assigned_staff_id, {
+            summary: demo.title || `Demo with ${demo.client_name || demo.lead_name || ''}`,
+            description: [demo.notes, demo.meeting_link ? `Meeting link: ${demo.meeting_link}` : null].filter(Boolean).join('\n\n'),
+            startISO: start.toISOString(),
+            endISO: end.toISOString(),
+            attendeeEmail: demo.client_email || null,
+        });
+
+        if (eventId) await db(TABLES.DEMOS).where('id', demo.id).update({ google_event_id: eventId });
+    } catch (error) {
+        console.error('pushDemoToCalendar failed:', error.message);
+    }
+};
+
+const updateDemoOnCalendar = async (demo) => {
+    if (!demo.google_event_id) return;
+    try {
+        const start = new Date(demo.demo_date_time);
+        const end = new Date(start.getTime() + demo.duration_minutes * 60000);
+        await GoogleOAuthHelper.updateCalendarEvent(demo.assigned_staff_id, demo.google_event_id, {
+            summary: demo.title,
+            startISO: start.toISOString(),
+            endISO: end.toISOString(),
+        });
+    } catch (error) {
+        console.error('updateDemoOnCalendar failed:', error.message);
+    }
+};
+
+const removeDemoFromCalendar = async (demo) => {
+    if (!demo.google_event_id) return;
+    try {
+        await GoogleOAuthHelper.deleteCalendarEvent(demo.assigned_staff_id, demo.google_event_id);
+    } catch (error) {
+        console.error('removeDemoFromCalendar failed:', error.message);
+    }
+};
+
 const sendClientConfirmationEmail = async (demo, lead) => {
     const clientEmail = demo.client_email || lead?.email;
     if (!clientEmail) return;
@@ -196,6 +243,7 @@ export const createDemo = async (req, res) => {
         });
 
         await sendClientConfirmationEmail(newDemo, lead);
+        await pushDemoToCalendar(newDemo);
 
         res.status(201).json({ success: true, message: "Demo scheduled successfully", data: newDemo });
     } catch (error) {
@@ -244,6 +292,10 @@ export const updateDemo = async (req, res) => {
 
         await db(TABLES.DEMOS).where('id', id).update(updateData);
         const updated = await withJoins(db(`${TABLES.DEMOS} as d`)).where('d.id', id).first();
+
+        if (updated.status === 'Cancelled') await removeDemoFromCalendar(updated);
+        else await updateDemoOnCalendar(updated);
+
         res.status(200).json({ success: true, message: "Demo updated successfully", data: updated });
     } catch (error) {
         console.error('Error:', error);
@@ -266,6 +318,8 @@ export const cancelDemo = async (req, res) => {
             staffid: currentUserId(req),
             full_name: currentUserName(req),
         });
+
+        await removeDemoFromCalendar(existing);
 
         res.status(200).json({ success: true, message: "Demo cancelled successfully" });
     } catch (error) {

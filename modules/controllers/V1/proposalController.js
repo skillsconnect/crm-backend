@@ -307,6 +307,69 @@ export const convertProposalToInvoice = async (req, res) => {
     }
 };
 
+// ==================== PUBLIC (no auth) — client-facing accept/decline link ====================
+
+export const getPublicProposalByHash = async (req, res) => {
+    try {
+        const { hash } = req.params;
+        const proposal = await withPartyJoins(db(`${TABLES.PROPOSALS} as p`)).where('p.hash', hash).first();
+        if (!proposal) return res.status(404).json({ success: false, message: "Proposal not found" });
+
+        const items = await db(TABLES.ITEMS).where('proposal_id', proposal.id).orderBy('item_order', 'asc');
+        const taxRateById = await loadTaxRateMap();
+        const itemsWithTax = items.map((item) => ({ ...item, tax_name: item.tax_rate_id ? taxRateById.get(Number(item.tax_rate_id))?.name : null }));
+
+        // First time the client opens the link, mark it Viewed — matches legacy behavior.
+        if (proposal.status === 'Sent') {
+            await db(TABLES.PROPOSALS).where('id', proposal.id).update({ status: 'Viewed' });
+            proposal.status = 'Viewed';
+        }
+
+        res.status(200).json({ success: true, data: { ...proposal, items: itemsWithTax } });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+const FINAL_STATUSES = ['Accepted', 'Declined'];
+
+export const publicRespondToProposal = async (req, res) => {
+    try {
+        const { hash } = req.params;
+        const { decision, name, email, signature } = req.body;
+
+        if (!['accept', 'decline'].includes(decision)) {
+            return res.status(400).json({ success: false, message: "Invalid decision" });
+        }
+
+        const proposal = await db(TABLES.PROPOSALS).where('hash', hash).first();
+        if (!proposal) return res.status(404).json({ success: false, message: "Proposal not found" });
+        if (FINAL_STATUSES.includes(proposal.status)) {
+            return res.status(409).json({ success: false, message: `This proposal was already ${proposal.status.toLowerCase()}` });
+        }
+
+        if (decision === 'accept') {
+            if (!name?.trim()) return res.status(400).json({ success: false, message: "Name is required to accept" });
+            await db(TABLES.PROPOSALS).where('id', proposal.id).update({
+                status: 'Accepted',
+                acceptance_name: name.trim(),
+                acceptance_email: email || null,
+                acceptance_date: new Date(),
+                acceptance_ip: req.ip || req.headers['x-forwarded-for'] || null,
+                signature: signature || null,
+            });
+        } else {
+            await db(TABLES.PROPOSALS).where('id', proposal.id).update({ status: 'Declined' });
+        }
+
+        res.status(200).json({ success: true, message: decision === 'accept' ? "Proposal accepted" : "Proposal declined" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 export const downloadProposalPdf = async (req, res) => {
     try {
         const { id } = req.params;

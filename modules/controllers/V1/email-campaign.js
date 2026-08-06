@@ -1889,36 +1889,52 @@ export const getGmailAuthUrl = async (req, res) => {
 
 // Step 2: Gmail Callback - Google redirects here
 export const gmailCallback = async (req, res) => {
+    let stateData = {};
     try {
         const { code, state } = req.query;
-        
+
         if (!code) {
             throw new Error('No authorization code received');
         }
-        
-        let senderId = null;
+
         if (state) {
-            const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
-            senderId = stateData.senderId;
+            stateData = JSON.parse(Buffer.from(state, 'base64').toString());
         }
-        
+
+        // Google only allows one registered redirect URI per client, so both
+        // the Gmail-sender flow and the staff Google-Calendar flow (see
+        // getCalendarConnectUrl) land here — state.type disambiguates.
+        if (stateData.type === 'calendar') {
+            if (!stateData.staffId) throw new Error('No staff ID found in state');
+
+            const tokens = await GoogleOAuthHelper.getTokensFromCode(code);
+            await GoogleOAuthHelper.saveCalendarTokens(stateData.staffId, tokens);
+
+            console.log(`✅ Google Calendar connected for staff ID: ${stateData.staffId}`);
+            return res.redirect(`${process.env.FRONTEND_URL}/profile?calendar_connected=true`);
+        }
+
+        const senderId = stateData.senderId;
         if (!senderId) {
             throw new Error('No sender ID found in state');
         }
-        
+
         // Exchange code for tokens
         const tokens = await GoogleOAuthHelper.getTokensFromCode(code);
-        
+
         // Save tokens to database
         await GoogleOAuthHelper.saveTokens(senderId, tokens);
-        
+
         console.log(`✅ Gmail connected successfully for sender ID: ${senderId}`);
-        
+
         // Redirect to frontend
         res.redirect(`${process.env.FRONTEND_URL}/email-campaign/senders?gmail_connected=true`);
         
     } catch (error) {
         console.error('Error in gmailCallback:', error);
+        if (stateData.type === 'calendar') {
+            return res.redirect(`${process.env.FRONTEND_URL}/profile?calendar_connected=false&error=${encodeURIComponent(error.message)}`);
+        }
         res.redirect(`${process.env.FRONTEND_URL}/email-campaign/senders?gmail_connected=false&error=${encodeURIComponent(error.message)}`);
     }
 };
