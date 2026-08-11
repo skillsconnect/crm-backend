@@ -3,6 +3,10 @@ import db from '../../../config/knex.js';
 import GoogleOAuthHelper from '../../../helpers/V1/googleOAuthHelper.js';
 
 const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
+const PHONE_REGEX = /^[0-9]{10}$/;
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const PASSWORD_POLICY_MESSAGE =
+    'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a number, and a special character';
 
 // req.user is populated by Authenticate middleware from ups_users — the same
 // hashing scheme as login (md5) is reused here for consistency; changing it
@@ -47,6 +51,18 @@ export const updateMyProfile = async (req, res) => {
 
         if (!first_name || !first_name.trim()) {
             return res.status(400).json({ success: false, message: "First name is required" });
+        }
+        if (!last_name || !last_name.trim()) {
+            return res.status(400).json({ success: false, message: "Last name is required" });
+        }
+        if (!mobile || !String(mobile).trim()) {
+            return res.status(400).json({ success: false, message: "Mobile number is required" });
+        }
+        if (!PHONE_REGEX.test(String(mobile).trim())) {
+            return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number" });
+        }
+        if (whatsapp_number && !PHONE_REGEX.test(String(whatsapp_number).trim())) {
+            return res.status(400).json({ success: false, message: "Enter a valid 10-digit WhatsApp number" });
         }
 
         const userUpdate = {
@@ -124,8 +140,11 @@ export const changeMyPassword = async (req, res) => {
         if (!current_password || !new_password) {
             return res.status(400).json({ success: false, message: "Current and new password are required" });
         }
-        if (String(new_password).length < 6) {
-            return res.status(400).json({ success: false, message: "New password must be at least 6 characters" });
+        if (!PASSWORD_REGEX.test(String(new_password))) {
+            return res.status(400).json({ success: false, message: PASSWORD_POLICY_MESSAGE });
+        }
+        if (new_password === current_password) {
+            return res.status(400).json({ success: false, message: "New password must be different from the current password" });
         }
 
         const user = await db('ups_users').select('id', 'password').where('id', userId).first();
