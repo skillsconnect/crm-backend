@@ -7,17 +7,10 @@ const startOfMonth = () => {
     return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
 };
 
-const endOfDay = (date) => {
-    const d = new Date(date);
-    d.setHours(23, 59, 59, 999);
-    return d;
-};
-
 export const getDashboardStats = async (req, res) => {
     try {
         const monthStart = startOfMonth();
         const now = new Date();
-        const todayEnd = endOfDay(now);
         const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
         // ---- Leads ----
@@ -41,8 +34,8 @@ export const getDashboardStats = async (req, res) => {
             .count('l.id as total');
 
         // ---- Demos ----
+        const demosScheduledRow = await db('crm_demo_schedules').where('status', 'Scheduled').count('id as total').first();
         const demosUpcomingRow = await db('crm_demo_schedules').where('status', 'Scheduled').where('demo_date_time', '>=', now).count('id as total').first();
-        const demosTodayRow = await db('crm_demo_schedules').where('status', 'Scheduled').whereBetween('demo_date_time', [now.toISOString().slice(0, 10), todayEnd]).count('id as total').first();
 
         const upcomingDemos = await db('crm_demo_schedules as d')
             .leftJoin('crm_leads as l', 'l.id', 'd.lead_id')
@@ -99,8 +92,8 @@ export const getDashboardStats = async (req, res) => {
                     invoices_total_value: Number(invoicesValueRow?.total_value || 0),
                     proposals_shared: Number(proposalsSharedRow?.total || 0),
                     proposals_accepted: Number(proposalsAcceptedRow?.total || 0),
-                    demos_scheduled: Number(demosUpcomingRow?.total || 0),
-                    demos_today: Number(demosTodayRow?.total || 0),
+                    demos_scheduled: Number(demosScheduledRow?.total || 0),
+                    demos_upcoming: Number(demosUpcomingRow?.total || 0),
                     overdue_invoices: Number(overdueRow?.total || 0),
                     overdue_invoices_value: Number(overdueRow?.total_value || 0),
                 },
