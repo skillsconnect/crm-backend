@@ -7,6 +7,30 @@ const TABLES = {
     PROCESS_STAFF: 'crm_process_staff'
 };
 
+const parseBoolean = (value) => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value === 1;
+    if (typeof value === 'string') {
+        const normalized = value.toLowerCase();
+        return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+    }
+    return false;
+};
+
+// Builds the comma-joined communication_mode column from either an explicit
+// communication_mode string or the email/whatsapp checkboxes the process
+// form submits.
+const buildCommunicationMode = (body = {}) => {
+    if (body.communication_mode && String(body.communication_mode).trim()) {
+        return String(body.communication_mode).trim();
+    }
+
+    const channels = [];
+    if (parseBoolean(body.email)) channels.push('email');
+    if (parseBoolean(body.whatsapp)) channels.push('whatsapp');
+    return channels.join(',');
+};
+
 // ==================== PROCESS MASTER ====================
 
 export const assignProcessToLead = async (req, res) => {
@@ -123,7 +147,7 @@ export const getAllProcesses = async (req, res) => {
 
         const processes = await CommonModel.getData(
             TABLES.PROCESS,
-            'id, sequence, process_name, email_subject, email_content, status',
+            'id, sequence, process_name, communication_mode, email_subject, email_content, status, created_on',
             condition,
             'sequence',
             'asc'
@@ -135,9 +159,12 @@ export const getAllProcesses = async (req, res) => {
             id: p.id,
             sequence: p.sequence,
             name: p.process_name,
+            process_name: p.process_name,
+            communication_mode: p.communication_mode,
             email_subject: p.email_subject,
             email_content: p.email_content,
             status: p.status,
+            created_on: p.created_on,
             displayName: `P${p.sequence}: ${p.process_name}`,
             tooltip: `${p.process_name} - ${p.email_subject}`
         }));
@@ -187,7 +214,7 @@ export const getProcessById = async (req, res) => {
 
 export const createProcess = async (req, res) => {
     try {
-        const { process_name, email_subject, email_content, status } = req.body;
+        const { process_name, email_subject, email_content, whatsapp_content, status } = req.body;
 
         if (!process_name || !process_name.trim()) {
             return res.status(400).json({
@@ -196,17 +223,35 @@ export const createProcess = async (req, res) => {
             });
         }
 
-        if (!email_subject || !email_subject.trim()) {
+        const communication_mode = buildCommunicationMode(req.body);
+        if (!communication_mode) {
             return res.status(400).json({
                 success: false,
-                message: "Email subject is required"
+                message: "At least one communication mode is required"
             });
         }
+        const modes = communication_mode.split(',');
 
-        if (!email_content || !email_content.trim()) {
+        if (modes.includes('email')) {
+            if (!email_subject || !email_subject.trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Email subject is required"
+                });
+            }
+
+            if (!email_content || !email_content.trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Email content is required"
+                });
+            }
+        }
+
+        if (modes.includes('whatsapp') && (!whatsapp_content || !whatsapp_content.trim())) {
             return res.status(400).json({
                 success: false,
-                message: "Email content is required"
+                message: "WhatsApp content is required"
             });
         }
 
@@ -228,14 +273,16 @@ export const createProcess = async (req, res) => {
             'MAX(sequence) as max_seq',
             "1=1"
         );
-        
+
         const nextSequence = (maxSequence?.[0]?.max_seq || 0) + 1;
 
         const insertData = {
             sequence: nextSequence,
             process_name: process_name.trim(),
-            email_subject: email_subject.trim(),
-            email_content: email_content,
+            email_subject: email_subject ? email_subject.trim() : '',
+            email_content: email_content || '',
+            whatsapp_content: whatsapp_content || '',
+            communication_mode,
             status: status || 'Active',
             created_on: new Date(),
             updated_on: new Date(),
@@ -271,7 +318,7 @@ export const createProcess = async (req, res) => {
 export const updateProcess = async (req, res) => {
     try {
         const { id } = req.params;
-        const { process_name, email_subject, email_content, status } = req.body;
+        const { process_name, email_subject, email_content, whatsapp_content, status } = req.body;
 
         const existing = await CommonModel.getData(TABLES.PROCESS, '*', `id = ${id}`);
 
@@ -304,7 +351,11 @@ export const updateProcess = async (req, res) => {
 
         if (email_subject && email_subject.trim()) updateData.email_subject = email_subject.trim();
         if (email_content) updateData.email_content = email_content;
+        if (whatsapp_content !== undefined) updateData.whatsapp_content = whatsapp_content;
         if (status) updateData.status = status;
+
+        const communication_mode = buildCommunicationMode(req.body);
+        if (communication_mode) updateData.communication_mode = communication_mode;
 
         const updated = await CommonModel.updateData(TABLES.PROCESS, updateData, `id = ${id}`);
 
