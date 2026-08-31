@@ -15,6 +15,12 @@ const TABLES = {
 
 const currentUserId = (req) => req.user?.id || 1;
 
+const respondError = (res, error, fallbackMessage = "Internal Server Error") => {
+    console.error('Error:', error);
+    if (error?.status) return res.status(error.status).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: fallbackMessage });
+};
+
 const loadTaxRateMap = async () => {
     const rates = await db(TABLES.TAX_RATES).select('id', 'name', 'rate');
     return new Map(rates.map((r) => [r.id, r]));
@@ -26,11 +32,14 @@ const withPartyJoins = (qb) => qb
     .select('cn.*', 'c.company as client_company', 'l.name as lead_name');
 
 // Draft and Void are explicit, sticky states. Otherwise a credit note is
-// Open while it still has an unused balance, Applied once fully consumed.
+// Open while untouched, Partially Applied while some but not all of it has
+// been used, and Applied once fully consumed.
 const deriveStatus = (creditNote) => {
     if (['Draft', 'Void'].includes(creditNote.status)) return creditNote.status;
-    const remaining = Number(creditNote.total) - Number(creditNote.amount_used);
-    return remaining <= 0.01 ? 'Applied' : 'Open';
+    const used = Number(creditNote.amount_used);
+    const remaining = Number(creditNote.total) - used;
+    if (remaining <= 0.01) return 'Applied';
+    return used > 0.01 ? 'Partially Applied' : 'Open';
 };
 
 export const getFormData = async (req, res) => {
@@ -94,10 +103,36 @@ export const getCreditNoteById = async (req, res) => {
     }
 };
 
+const validateReferencedInvoice = async (invoice_id, client_id, lead_id) => {
+    if (!invoice_id) return null;
+    const invoice = await db(TABLES.INVOICES).where('id', invoice_id).first();
+    if (!invoice) throw Object.assign(new Error('Referenced invoice not found'), { status: 400 });
+    const sameClient = client_id && invoice.client_id === Number(client_id);
+    const sameLead = lead_id && invoice.lead_id === Number(lead_id);
+    if (!sameClient && !sameLead) {
+        throw Object.assign(new Error('Referenced invoice does not belong to the selected client/lead'), { status: 400 });
+    }
+    return invoice;
+};
+
 const buildCreditNotePayload = async (body) => {
     const { client_id, lead_id, invoice_id, currency, discount_type, discount_percent, adjustment, date, notes, assigned, items } = body;
 
     const validItems = (Array.isArray(items) ? items : []).filter((i) => i.description?.trim());
+    for (const item of validItems) {
+        if (!(Number(item.qty) > 0)) {
+            throw Object.assign(new Error(`Quantity must be greater than zero for item "${item.description.trim()}"`), { status: 400 });
+        }
+        if (Number(item.rate) < 0) {
+            throw Object.assign(new Error(`Rate must be valid for item "${item.description.trim()}"`), { status: 400 });
+        }
+    }
+    if (!validItems.length) {
+        throw Object.assign(new Error('At least one line item is required'), { status: 400 });
+    }
+
+    await validateReferencedInvoice(invoice_id, client_id, lead_id);
+
     const taxRateById = await loadTaxRateMap();
     const totals = calculateTotals(validItems, { discount_type, discount_percent, adjustment }, taxRateById);
 
@@ -158,8 +193,7 @@ export const createCreditNote = async (req, res) => {
         const newCreditNote = await db(TABLES.CREDIT_NOTES).where('id', creditNoteId).first();
         res.status(201).json({ success: true, message: "Credit note created successfully", data: newCreditNote });
     } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        respondError(res, error);
     }
 };
 
@@ -196,8 +230,7 @@ export const updateCreditNote = async (req, res) => {
         const updated = await db(TABLES.CREDIT_NOTES).where('id', id).first();
         res.status(200).json({ success: true, message: "Credit note updated successfully", data: updated });
     } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        respondError(res, error);
     }
 };
 
@@ -206,8 +239,8 @@ export const deleteCreditNote = async (req, res) => {
         const { id } = req.params;
         const existing = await db(TABLES.CREDIT_NOTES).where('id', id).first();
         if (!existing) return res.status(404).json({ success: false, message: "Credit note not found" });
-        if (Number(existing.amount_used) > 0) {
-            return res.status(400).json({ success: false, message: "Cannot delete a credit note that has already been applied to an invoice — void it instead" });
+        if (existing.status !== 'Draft') {
+            return res.status(400).json({ success: false, message: "Only a draft credit note can be deleted — void it instead" });
         }
 
         await db.transaction(async (trx) => {
@@ -227,8 +260,16 @@ export const voidCreditNote = async (req, res) => {
         const { id } = req.params;
         const existing = await db(TABLES.CREDIT_NOTES).where('id', id).first();
         if (!existing) return res.status(404).json({ success: false, message: "Credit note not found" });
+        if (existing.status === 'Void') {
+            return res.status(400).json({ success: false, message: "This credit note has already been voided" });
+        }
 
-        await db(TABLES.CREDIT_NOTES).where('id', id).update({ status: 'Void', updated_by: currentUserId(req) });
+        await db(TABLES.CREDIT_NOTES).where('id', id).update({
+            status: 'Void',
+            voided_by: currentUserId(req),
+            voided_on: new Date(),
+            updated_by: currentUserId(req),
+        });
         res.status(200).json({ success: true, message: "Credit note voided" });
     } catch (error) {
         console.error('Error:', error);
@@ -247,30 +288,33 @@ export const applyCreditNoteToInvoice = async (req, res) => {
         const { id } = req.params;
         const { invoice_id, amount, applied_date } = req.body;
 
-        const creditNote = await db(TABLES.CREDIT_NOTES).where('id', id).first();
-        if (!creditNote) return res.status(404).json({ success: false, message: "Credit note not found" });
-        if (creditNote.status === 'Void') return res.status(400).json({ success: false, message: "This credit note has been voided" });
-        if (creditNote.status === 'Draft') return res.status(400).json({ success: false, message: "Finalize this credit note before applying it" });
-
-        const invoice = await db(TABLES.INVOICES).where('id', invoice_id).first();
-        if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
-
         const applyAmount = Number(amount);
         if (!applyAmount || applyAmount <= 0) {
             return res.status(400).json({ success: false, message: "A positive amount is required" });
         }
 
-        const creditRemaining = Number(creditNote.total) - Number(creditNote.amount_used);
-        if (applyAmount > creditRemaining + 0.01) {
-            return res.status(400).json({ success: false, message: `Amount exceeds the credit note's remaining balance of ${creditRemaining.toFixed(2)}` });
-        }
-
-        const invoiceRemaining = Number(invoice.total) - Number(invoice.amount_paid);
-        if (applyAmount > invoiceRemaining + 0.01) {
-            return res.status(400).json({ success: false, message: `Amount exceeds the invoice's remaining balance of ${invoiceRemaining.toFixed(2)}` });
-        }
-
         await db.transaction(async (trx) => {
+            // Lock both rows for the duration of the transaction so two concurrent
+            // apply requests against the same credit note/invoice can't both read
+            // stale amount_used/amount_paid and jointly over-apply credit.
+            const creditNote = await trx(TABLES.CREDIT_NOTES).where('id', id).forUpdate().first();
+            if (!creditNote) throw Object.assign(new Error('Credit note not found'), { status: 404 });
+            if (creditNote.status === 'Void') throw Object.assign(new Error('This credit note has been voided'), { status: 400 });
+            if (creditNote.status === 'Draft') throw Object.assign(new Error('Finalize this credit note before applying it'), { status: 400 });
+
+            const invoice = await trx(TABLES.INVOICES).where('id', invoice_id).forUpdate().first();
+            if (!invoice) throw Object.assign(new Error('Invoice not found'), { status: 404 });
+
+            const creditRemaining = Number(creditNote.total) - Number(creditNote.amount_used);
+            if (applyAmount > creditRemaining + 0.01) {
+                throw Object.assign(new Error(`Amount exceeds the credit note's remaining balance of ${creditRemaining.toFixed(2)}`), { status: 400 });
+            }
+
+            const invoiceRemaining = Number(invoice.total) - Number(invoice.amount_paid);
+            if (applyAmount > invoiceRemaining + 0.01) {
+                throw Object.assign(new Error(`Amount exceeds the invoice's remaining balance of ${invoiceRemaining.toFixed(2)}`), { status: 400 });
+            }
+
             const [paymentId] = await trx(TABLES.INVOICE_PAYMENTS).insert({
                 invoice_id,
                 amount: applyAmount,
@@ -311,8 +355,7 @@ export const applyCreditNoteToInvoice = async (req, res) => {
 
         res.status(201).json({ success: true, message: "Credit note applied to invoice successfully" });
     } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        respondError(res, error);
     }
 };
 
