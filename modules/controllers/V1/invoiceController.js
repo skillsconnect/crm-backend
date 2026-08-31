@@ -63,7 +63,15 @@ export const getAllInvoices = async (req, res) => {
         let query = withPartyJoins(db(`${TABLES.INVOICES} as i`));
         if (status) query = query.where('i.status', status);
         if (client_id) query = query.where('i.client_id', client_id);
-        if (search) query = query.where('i.invoice_number', 'like', `%${search}%`);
+        if (search) {
+            const term = `%${search}%`;
+            query = query.where((qb) => {
+                qb.where('i.invoice_number', 'like', term)
+                    .orWhere('c.company', 'like', term)
+                    .orWhere('l.name', 'like', term)
+                    .orWhere('l.company', 'like', term);
+            });
+        }
 
         const totalRow = await query.clone().clearSelect().count('i.id as total').first();
         const invoices = await query.orderBy('i.id', 'desc').offset((pageNum - 1) * pageSize).limit(pageSize);
