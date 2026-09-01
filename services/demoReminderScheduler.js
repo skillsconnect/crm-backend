@@ -1,5 +1,5 @@
 import db from '../config/knex.js';
-import { sendMessageToWSClient } from '../helpers/V1/websocket.js';
+import { notifyUser } from './notificationService.js';
 import { sendMail } from '../helpers/V1/mail.helper.js';
 
 // Must run inside the same process as the WebSocket server (app.js) — the
@@ -54,18 +54,18 @@ async function checkAndSendReminders() {
 async function sendReminder(demo, threshold) {
     const when = formatWhen(demo.demo_date_time);
 
-    // In-app push to the assigned staff member over the existing WebSocket
-    // connection (no-op if they're not currently connected — nothing queues
-    // for later, matching the "live" nature of the existing WS helper).
-    sendMessageToWSClient(String(demo.assigned_staff_id), {
+    // Persisted notification + live WebSocket push to the assigned staff member.
+    await notifyUser(demo.assigned_staff_id, {
         type: 'demo_reminder',
         title: `Demo in ${threshold.label}`,
         message: `${demo.lead_name || demo.client_name || 'Demo'}${demo.lead_company ? ` (${demo.lead_company})` : ''} at ${when}`,
-        demo_id: demo.id,
-        lead_id: demo.lead_id,
-        meeting_link: demo.meeting_link || null,
-        minutes_before: threshold.minutes,
-        sent_at: new Date().toISOString(),
+        link: '/demos',
+        meta: {
+            demo_id: demo.id,
+            lead_id: demo.lead_id,
+            meeting_link: demo.meeting_link || null,
+            minutes_before: threshold.minutes,
+        },
     });
 
     // Email nudge to the client so their side stays informed even though we

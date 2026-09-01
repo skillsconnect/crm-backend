@@ -60,6 +60,8 @@ import {
 import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
 import authenticate from '../../middlewares/Authenticate.js';
 import requirePermission from '../../middlewares/requirePermission.js';
+import db from '../../config/knex.js';
+import { hasGlobalLeadView, userOwnsLead } from '../../helpers/V1/leadAccess.js';
 
 const router = express.Router();
 
@@ -70,6 +72,23 @@ const view = requirePermission('leads', 'view');
 const create = requirePermission('leads', 'create');
 const edit = requirePermission('leads', 'edit');
 const del = requirePermission('leads', 'delete');
+
+// Row-level guard for a single lead (`:id`). Without leads:view_global a user
+// may only touch leads they own (assigned/added) or that are public.
+const ownLead = async (req, res, next) => {
+    try {
+        const lead = await db('crm_leads').where('id', req.params.id).first();
+        if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+        if (!(await hasGlobalLeadView(req)) && !userOwnsLead(req, lead)) {
+            return res.status(403).json({ success: false, message: "You don't have access to this lead" });
+        }
+        req.lead = lead;
+        next();
+    } catch (error) {
+        console.error('ownLead guard failed:', error);
+        res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+};
 
 const businessCardDir = 'uploads/business_cards';
 if (!fs.existsSync(businessCardDir)) {
@@ -165,34 +184,34 @@ router.post('/bulk-actions', edit, bulkActionLeads);
 // ==================== LEAD CRUD ====================
 router.get('/', view, getAllLeads);
 router.post('/', create, createLead);
-router.get('/:id', view, getLeadById);
-router.put('/:id', edit, updateLead);
-router.delete('/:id', del, deleteLead);
+router.get('/:id', view, ownLead, getLeadById);
+router.put('/:id', edit, ownLead, updateLead);
+router.delete('/:id', del, ownLead, deleteLead);
 
 // ==================== LEAD DETAIL SUB-RESOURCES ====================
-router.patch('/:id/status', edit, updateLeadKanbanStatus);
-router.post('/:id/activity', edit, addLeadActivity);
-router.post('/:id/notes', edit, addLeadNote);
-router.delete('/:id/notes/:noteId', edit, deleteLeadNote);
-router.get('/:id/reminders', view, getLeadReminders);
-router.post('/:id/reminders', edit, addLeadReminder);
-router.put('/:id/reminders/:reminderId', edit, updateLeadReminder);
-router.delete('/:id/reminders/:reminderId', edit, deleteLeadReminder);
-router.patch('/:id/lost', edit, markLeadLost);
-router.patch('/:id/unlost', edit, unmarkLeadLost);
-router.patch('/:id/junk', edit, markLeadJunk);
-router.patch('/:id/unjunk', edit, unmarkLeadJunk);
-router.post('/:id/convert', edit, convertLeadToCustomer);
-router.post('/:id/tags', edit, assignLeadTags);
+router.patch('/:id/status', edit, ownLead, updateLeadKanbanStatus);
+router.post('/:id/activity', edit, ownLead, addLeadActivity);
+router.post('/:id/notes', edit, ownLead, addLeadNote);
+router.delete('/:id/notes/:noteId', edit, ownLead, deleteLeadNote);
+router.get('/:id/reminders', view, ownLead, getLeadReminders);
+router.post('/:id/reminders', edit, ownLead, addLeadReminder);
+router.put('/:id/reminders/:reminderId', edit, ownLead, updateLeadReminder);
+router.delete('/:id/reminders/:reminderId', edit, ownLead, deleteLeadReminder);
+router.patch('/:id/lost', edit, ownLead, markLeadLost);
+router.patch('/:id/unlost', edit, ownLead, unmarkLeadLost);
+router.patch('/:id/junk', edit, ownLead, markLeadJunk);
+router.patch('/:id/unjunk', edit, ownLead, unmarkLeadJunk);
+router.post('/:id/convert', edit, ownLead, convertLeadToCustomer);
+router.post('/:id/tags', edit, ownLead, assignLeadTags);
 
 // ==================== LEAD ATTACHMENTS ====================
-router.post('/:id/attachments', edit, uploadAttachment.single('file'), uploadLeadAttachment);
-router.get('/:id/attachments/:attachmentId/download', view, downloadLeadAttachment);
-router.delete('/:id/attachments/:attachmentId', edit, deleteLeadAttachment);
+router.post('/:id/attachments', edit, ownLead, uploadAttachment.single('file'), uploadLeadAttachment);
+router.get('/:id/attachments/:attachmentId/download', view, ownLead, downloadLeadAttachment);
+router.delete('/:id/attachments/:attachmentId', edit, ownLead, deleteLeadAttachment);
 
 // ==================== LEAD AUDIO NOTES ====================
-router.post('/:id/audio-notes', edit, uploadAudioNote.single('audio'), uploadLeadAudioNote);
-router.get('/:id/audio-notes/:audioId/stream', view, streamLeadAudioNote);
-router.delete('/:id/audio-notes/:audioId', edit, deleteLeadAudioNote);
+router.post('/:id/audio-notes', edit, ownLead, uploadAudioNote.single('audio'), uploadLeadAudioNote);
+router.get('/:id/audio-notes/:audioId/stream', view, ownLead, streamLeadAudioNote);
+router.delete('/:id/audio-notes/:audioId', edit, ownLead, deleteLeadAudioNote);
 
 export default router;
