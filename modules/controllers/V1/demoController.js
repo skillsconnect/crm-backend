@@ -1,6 +1,10 @@
 import db from '../../../config/knex.js';
 import { sendMail } from '../../../helpers/V1/mail.helper.js';
 import GoogleOAuthHelper from '../../../helpers/V1/googleOAuthHelper.js';
+import { notifyUser } from '../../../services/notificationService.js';
+
+const formatDemoWhen = (value) =>
+    new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
 
 const TABLES = {
     DEMOS: 'crm_demo_schedules',
@@ -245,6 +249,15 @@ export const createDemo = async (req, res) => {
         await sendClientConfirmationEmail(newDemo, lead);
         await pushDemoToCalendar(newDemo);
 
+        await notifyUser(assigned_staff_id, {
+            type: 'demo_scheduled',
+            title: 'Demo scheduled for you',
+            message: `${lead.name}${lead.company ? ` (${lead.company})` : ''} on ${formatDemoWhen(demo_date_time)}`,
+            link: '/demos',
+            meta: { demo_id: insertedId, lead_id, meeting_link: meeting_link || null },
+            actorId: currentUserId(req),
+        });
+
         res.status(201).json({ success: true, message: "Demo scheduled successfully", data: newDemo });
     } catch (error) {
         console.error('Error:', error);
@@ -296,6 +309,44 @@ export const updateDemo = async (req, res) => {
         if (updated.status === 'Cancelled') await removeDemoFromCalendar(updated);
         else await updateDemoOnCalendar(updated);
 
+        try {
+            const actorId = currentUserId(req);
+            const staffChanged = Number(nextStaffId) !== Number(existing.assigned_staff_id);
+            const timeChanged = req.body.demo_date_time && req.body.demo_date_time !== existing.demo_date_time;
+            const label = `${updated.lead_name || updated.client_name || 'Demo'} on ${formatDemoWhen(updated.demo_date_time)}`;
+
+            if (updated.status === 'Cancelled') {
+                await notifyUser(existing.assigned_staff_id, {
+                    type: 'demo_cancelled',
+                    title: 'Demo cancelled',
+                    message: label,
+                    link: '/demos',
+                    meta: { demo_id: Number(id), lead_id: existing.lead_id },
+                    actorId,
+                });
+            } else if (staffChanged) {
+                await notifyUser(nextStaffId, {
+                    type: 'demo_reassigned',
+                    title: 'A demo was assigned to you',
+                    message: label,
+                    link: '/demos',
+                    meta: { demo_id: Number(id), lead_id: existing.lead_id, meeting_link: updated.meeting_link || null },
+                    actorId,
+                });
+            } else if (timeChanged) {
+                await notifyUser(nextStaffId, {
+                    type: 'demo_rescheduled',
+                    title: 'Demo rescheduled',
+                    message: label,
+                    link: '/demos',
+                    meta: { demo_id: Number(id), lead_id: existing.lead_id },
+                    actorId,
+                });
+            }
+        } catch (notifyError) {
+            console.error('updateDemo notification failed:', notifyError?.message || notifyError);
+        }
+
         res.status(200).json({ success: true, message: "Demo updated successfully", data: updated });
     } catch (error) {
         console.error('Error:', error);
@@ -320,6 +371,15 @@ export const cancelDemo = async (req, res) => {
         });
 
         await removeDemoFromCalendar(existing);
+
+        await notifyUser(existing.assigned_staff_id, {
+            type: 'demo_cancelled',
+            title: 'Demo cancelled',
+            message: `Demo on ${formatDemoWhen(existing.demo_date_time)}`,
+            link: '/demos',
+            meta: { demo_id: Number(id), lead_id: existing.lead_id },
+            actorId: currentUserId(req),
+        });
 
         res.status(200).json({ success: true, message: "Demo cancelled successfully" });
     } catch (error) {

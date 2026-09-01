@@ -4,6 +4,8 @@ import { parse } from 'json2csv';
 import db from '../../../config/knex.js';
 import OCRService from '../../../services/ocrService.js';
 import { uploadToAzureBlob, getAzureBlobStream, deleteBlobByUrl } from '../../../helpers/V1/azureBlobService.js';
+import { notifyUser } from '../../../services/notificationService.js';
+import { hasGlobalLeadView, scopeLeadsForUser } from '../../../helpers/V1/leadAccess.js';
 
 const TABLES = {
     LEADS: 'crm_leads',
@@ -501,7 +503,12 @@ export const getAllLeads = async (req, res) => {
         const sortColumn = sortableColumns.includes(sort_by) ? `l.${sort_by}` : 'l.id';
         const sortDir = String(sort_dir).toLowerCase() === 'asc' ? 'asc' : 'desc';
 
-        const baseQuery = () => withLeadJoins(db(`${TABLES.LEADS} as l`)).modify(activeLeadScope).modify((qb) => buildLeadFilters(qb, { search, status, source, assigned, tag }));
+        const isGlobalView = await hasGlobalLeadView(req);
+
+        const baseQuery = () => withLeadJoins(db(`${TABLES.LEADS} as l`))
+            .modify(activeLeadScope)
+            .modify(scopeLeadsForUser(req, isGlobalView))
+            .modify((qb) => buildLeadFilters(qb, { search, status, source, assigned, tag }));
 
         const totalRow = await baseQuery().count('l.id as total').first();
         const total = Number(totalRow?.total || 0);
@@ -512,15 +519,16 @@ export const getAllLeads = async (req, res) => {
             .offset(offset)
             .limit(pageSize);
 
-        const summaryRaw = await db(`${TABLES.STATUS} as s`)
-            .leftJoin(`${TABLES.LEADS} as l`, function () {
-                this.on('l.status', '=', 's.id').andOnVal('l.lost', false).andOnVal('l.junk', false).andOnVal('l.is_deleted', false);
-            })
-            .where('s.status', 'Active')
-            .groupBy('s.id', 's.name', 's.color', 's.sequence')
-            .orderBy('s.sequence', 'asc')
-            .select('s.id', 's.name', 's.color')
+        // Per-status counts, restricted to the same set of leads the user can see.
+        const statusCountRows = await db(`${TABLES.LEADS} as l`)
+            .modify(activeLeadScope)
+            .modify(scopeLeadsForUser(req, isGlobalView))
+            .groupBy('l.status')
+            .select('l.status')
             .count('l.id as total');
+        const totalByStatus = new Map(statusCountRows.map((r) => [Number(r.status), Number(r.total || 0)]));
+        const activeStatuses = await db(TABLES.STATUS).where('status', 'Active').orderBy('sequence', 'asc').select('id', 'name', 'color');
+        const summaryRaw = activeStatuses.map((s) => ({ id: s.id, name: s.name, color: s.color, total: totalByStatus.get(Number(s.id)) || 0 }));
 
         const processes = await db(TABLES.PROCESS).select('id', 'process_name', 'sequence').where('status', 'Active').orderBy('sequence', 'asc');
 
@@ -567,10 +575,13 @@ export const getLeadsKanban = async (req, res) => {
             statuses = await db(TABLES.STATUS).select('*').where('status', 'Active').orderBy('sequence', 'asc');
         }
 
+        const isGlobalView = await hasGlobalLeadView(req);
+
         const columns = [];
         for (const statusRow of statuses) {
             const baseQuery = () => db(`${TABLES.LEADS} as l`)
                 .modify(activeLeadScope)
+                .modify(scopeLeadsForUser(req, isGlobalView))
                 .where('l.status', statusRow.id)
                 .modify((qb) => buildLeadFilters(qb, { search }));
 
@@ -625,6 +636,17 @@ export const updateLeadKanbanStatus = async (req, res) => {
 
             await logActivity(id, `Status changed to ${targetStatus.name}`, req, trx);
         });
+
+        if (existing.assigned) {
+            await notifyUser(existing.assigned, {
+                type: 'lead_status_changed',
+                title: 'Lead status updated',
+                message: `${existing.name} → ${targetStatus.name}`,
+                link: `/lead/edit/${id}`,
+                meta: { lead_id: Number(id), status_id: Number(status_id) },
+                actorId: currentUserId(req),
+            });
+        }
 
         res.status(200).json({ success: true, message: "Lead status updated successfully" });
     } catch (error) {
@@ -709,7 +731,7 @@ export const createLead = async (req, res) => {
             country: country || 0,
             zip: zip || null,
             website: website || null,
-            lead_value: lead_value || null,
+            lead_value: (lead_value === '' || lead_value === null || lead_value === undefined || Number.isNaN(Number(lead_value))) ? null : lead_value,
             is_public: Boolean(is_public),
             public_contacted_today: Boolean(public_contacted_today),
             employee_count: employee_count || null,
@@ -729,10 +751,27 @@ export const createLead = async (req, res) => {
 
         const [insertedId] = await db(TABLES.LEADS).insert(insertData);
 
-        await logActivity(insertedId, 'Lead created', req);
+        // Side effects must not fail the request after the lead is committed —
+        // otherwise the client retries and creates a duplicate lead.
+        try {
+            await logActivity(insertedId, 'Lead created', req);
 
-        if (send_introductry_mail && contact_date_time && email_subject && email_content && email) {
-            await queueIntroductoryEmail(insertedId, { email, email_subject, email_content, contact_date_time });
+            if (insertData.assigned) {
+                await notifyUser(insertData.assigned, {
+                    type: 'lead_assigned',
+                    title: 'New lead assigned to you',
+                    message: `${insertData.name}${insertData.company ? ` — ${insertData.company}` : ''}`,
+                    link: `/lead/edit/${insertedId}`,
+                    meta: { lead_id: insertedId },
+                    actorId: currentUserId(req),
+                });
+            }
+
+            if (send_introductry_mail && contact_date_time && email_subject && email_content && email) {
+                await queueIntroductoryEmail(insertedId, { email, email_subject, email_content, contact_date_time });
+            }
+        } catch (sideEffectError) {
+            console.error('createLead post-insert side effect failed:', sideEffectError?.message || sideEffectError);
         }
 
         const newLead = await db(TABLES.LEADS).where('id', insertedId).first();
@@ -769,6 +808,11 @@ export const updateLead = async (req, res) => {
                 // NOT NULL int columns (default 0) — the form sends null/"" when
                 // nothing is picked, so coerce that to 0 rather than a null write.
                 updateData[field] = req.body[field] || 0;
+            } else if (field === 'lead_value') {
+                // decimal column — "" from the form is not a valid decimal (strict
+                // mode rejects it), so store NULL when empty / non-numeric.
+                const v = req.body.lead_value;
+                updateData.lead_value = (v === '' || v === null || Number.isNaN(Number(v))) ? null : v;
             } else {
                 updateData[field] = req.body[field];
             }
@@ -783,6 +827,42 @@ export const updateLead = async (req, res) => {
 
         await db(TABLES.LEADS).where('id', id).update(updateData);
         const updatedLead = await db(TABLES.LEADS).where('id', id).first();
+
+        try {
+            const actorId = currentUserId(req);
+            const assigneeChanged = updateData.assigned !== undefined
+                && Number(updateData.assigned) !== Number(existing.assigned);
+            const statusChanged = updateData.status !== undefined
+                && Number(updateData.status) !== Number(existing.status);
+
+            if (assigneeChanged && updateData.assigned) {
+                await notifyUser(updateData.assigned, {
+                    type: 'lead_assigned',
+                    title: 'A lead was assigned to you',
+                    message: `${updatedLead.name}${updatedLead.company ? ` — ${updatedLead.company}` : ''}`,
+                    link: `/lead/edit/${id}`,
+                    meta: { lead_id: Number(id) },
+                    actorId,
+                });
+            }
+
+            // Notify whoever currently owns the lead when someone else moves it.
+            const owner = Number(updateData.assigned ?? existing.assigned);
+            if (statusChanged && owner) {
+                const st = await db(TABLES.STATUS).where('id', updateData.status).first();
+                await notifyUser(owner, {
+                    type: 'lead_status_changed',
+                    title: 'Lead status updated',
+                    message: `${updatedLead.name} → ${st?.name || 'new status'}`,
+                    link: `/lead/edit/${id}`,
+                    meta: { lead_id: Number(id), status_id: Number(updateData.status) },
+                    actorId,
+                });
+            }
+        } catch (notifyError) {
+            console.error('updateLead notification failed:', notifyError?.message || notifyError);
+        }
+
         res.status(200).json({ success: true, message: "Lead updated successfully", data: updatedLead });
     } catch (error) {
         console.error('Error:', error);
@@ -812,9 +892,22 @@ export const bulkActionLeads = async (req, res) => {
             return res.status(400).json({ success: false, message: "No leads selected" });
         }
 
+        // Without leads:view_global, a bulk action may only touch leads the user
+        // owns / that are public — drop the rest from the selection.
+        let scopedIds = ids;
+        if (!(await hasGlobalLeadView(req))) {
+            scopedIds = await db(`${TABLES.LEADS} as l`)
+                .whereIn('l.id', ids)
+                .modify(scopeLeadsForUser(req, false))
+                .pluck('l.id');
+        }
+        if (!scopedIds.length) {
+            return res.status(403).json({ success: false, message: "You don't have access to the selected leads" });
+        }
+
         if (mass_delete) {
-            await db(TABLES.LEADS).whereIn('id', ids).update({ is_deleted: true, updated_by: currentUserId(req) });
-            return res.status(200).json({ success: true, message: `${ids.length} leads deleted successfully` });
+            await db(TABLES.LEADS).whereIn('id', scopedIds).update({ is_deleted: true, updated_by: currentUserId(req) });
+            return res.status(200).json({ success: true, message: `${scopedIds.length} leads deleted successfully` });
         }
 
         const updateData = { updated_by: currentUserId(req) };
@@ -831,8 +924,20 @@ export const bulkActionLeads = async (req, res) => {
             return res.status(400).json({ success: false, message: "No changes provided" });
         }
 
-        await db(TABLES.LEADS).whereIn('id', ids).update(updateData);
-        res.status(200).json({ success: true, message: `${ids.length} leads updated successfully` });
+        await db(TABLES.LEADS).whereIn('id', scopedIds).update(updateData);
+
+        if (updateData.assigned) {
+            await notifyUser(updateData.assigned, {
+                type: 'lead_assigned',
+                title: scopedIds.length > 1 ? `${scopedIds.length} leads assigned to you` : 'A lead was assigned to you',
+                message: scopedIds.length > 1 ? 'Open the leads list to review them.' : '',
+                link: '/lead',
+                meta: { lead_ids: scopedIds },
+                actorId: currentUserId(req),
+            });
+        }
+
+        res.status(200).json({ success: true, message: `${scopedIds.length} leads updated successfully` });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -1392,8 +1497,11 @@ export const exportLeadsCSV = async (req, res) => {
     try {
         const { search, status, source, assigned, tag } = req.query;
 
+        const isGlobalView = await hasGlobalLeadView(req);
+
         const leads = await withLeadJoins(db(`${TABLES.LEADS} as l`))
             .modify(activeLeadScope)
+            .modify(scopeLeadsForUser(req, isGlobalView))
             .modify((qb) => buildLeadFilters(qb, { search, status, source, assigned, tag }))
             .select(
                 'l.name', 'l.email', 'l.phonenumber', 'l.company', 'l.title', 'l.tags', 'l.description',

@@ -8,7 +8,10 @@
 // Add a new module here and it automatically shows up in the Staff
 // permissions UI and can be enforced via requirePermission(feature, cap).
 
-export const CRM_CAPABILITIES = ['view', 'create', 'edit', 'delete'];
+// `view` grants access to a module but, for record-scoped modules (currently
+// leads), only to the records the user owns / that are public. `view_global`
+// widens that to every record in the module. Admins always have view_global.
+export const CRM_CAPABILITIES = ['view', 'view_global', 'create', 'edit', 'delete'];
 
 export const CRM_FEATURES = [
     { key: 'leads', label: 'Leads' },

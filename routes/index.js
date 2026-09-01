@@ -39,6 +39,7 @@ const demos = await loadRouter('demos')
 const dashboard = await loadRouter('dashboard')
 const staff = await loadRouter('staff')
 const roles = await loadRouter('roles')
+const notifications = await loadRouter('notifications')
 const publicRoutes = await loadRouter('public')
 
 // route
@@ -57,6 +58,7 @@ router.use("/demos", demos)
 router.use("/dashboard", dashboard)
 router.use("/staff", staff)
 router.use("/roles", roles)
+router.use("/notifications", notifications)
 router.use("/public", publicRoutes)
 
 export default router;
