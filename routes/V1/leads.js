@@ -51,6 +51,12 @@ import {
     deleteLeadAudioNote,
 } from '../../modules/controllers/V1/leadController.js';
 
+import {
+    getCountries,
+    getStates,
+    getCities,
+} from '../../modules/controllers/V1/masterDataController.js';
+
 import { uploadCSV, parseCSV, validateCSV } from '../../middlewares/csvMiddleware.js';
 import authenticate from '../../middlewares/Authenticate.js';
 import requirePermission from '../../middlewares/requirePermission.js';
@@ -107,6 +113,14 @@ const uploadAudioNote = multer({
 // ==================== LEAD FORM DATA ====================
 router.get('/form-data', view, getLeadFormData);
 
+// ==================== LOCATION LOOKUPS ====================
+// Read-only proxies to the shared master-data reference tables so the lead
+// add/edit form can drive dependent country -> state -> city dropdowns
+// without requiring the separate master_data:view permission.
+router.get('/locations/countries', view, getCountries);
+router.get('/locations/states', view, getStates);
+router.get('/locations/cities', view, getCities);
+
 // ==================== LEAD STATUS ROUTES ====================
 router.get('/statuses', view, getAllStatuses);
 router.get('/statuses/:id', view, getStatusById);
@@ -142,7 +156,8 @@ router.post('/import', create, uploadCSV, parseCSV, validateCSV, importLeadsCSV)
 router.get('/export', view, exportLeadsCSV);
 
 // ==================== OCR ====================
-router.post('/ocr/business-card', create, uploadBusinessCard.single('business_card'), ocrBusinessCard);
+// Up to 2 images — a business card may be photographed front and back.
+router.post('/ocr/business-card', create, uploadBusinessCard.array('business_card', 2), ocrBusinessCard);
 
 // ==================== LEAD BULK ACTIONS ====================
 router.post('/bulk-actions', edit, bulkActionLeads);

@@ -765,6 +765,10 @@ export const updateLead = async (req, res) => {
                 updateData.name = String(req.body.name).trim();
             } else if (['is_public', 'public_contacted_today', 'persist_mail_24h'].includes(field)) {
                 updateData[field] = Boolean(req.body[field]);
+            } else if (['status', 'source', 'assigned', 'country'].includes(field)) {
+                // NOT NULL int columns (default 0) — the form sends null/"" when
+                // nothing is picked, so coerce that to 0 rather than a null write.
+                updateData[field] = req.body[field] || 0;
             } else {
                 updateData[field] = req.body[field];
             }
@@ -1426,19 +1430,37 @@ export const exportLeadsCSV = async (req, res) => {
 // ==================== OCR BUSINESS CARD ====================
 
 export const ocrBusinessCard = async (req, res) => {
+    // .array('business_card', 2) -> req.files; keep single-file callers working.
+    const files = (req.files && req.files.length)
+        ? req.files
+        : (req.file ? [req.file] : []);
+
+    const cleanup = () => {
+        for (const file of files) {
+            if (file?.path && fs.existsSync(file.path)) {
+                try { fs.unlinkSync(file.path); } catch (_) { /* ignore */ }
+            }
+        }
+    };
+
     try {
-        if (!req.file) {
+        if (!files.length) {
             return res.status(400).json({ success: false, message: "No file uploaded" });
         }
 
-        const extractedText = await OCRService.extractFromImage(req.file.path);
-        const parsed = OCRService.extractStructuredData(extractedText);
+        const imagePaths = files.map((f) => f.path);
 
-        const uploadedCardName = path.basename(req.file.path);
+        // Provider is configured in OCRService (BUSINESS_CARD_AI_PROVIDER —
+        // NVIDIA Nemotron by default, Azure GPT-4o vision opt-in). Falls back to
+        // the other provider, then a regex parse of the OCR text.
+        const { parsed = {}, source } = await OCRService.extractCardData(imagePaths);
+
+        const uploadedCardName = files.map((f) => path.basename(f.path)).join(', ');
 
         res.status(200).json({
             success: true,
             message: "Business card processed successfully",
+            source,
             uploaded_card_name: uploadedCardName,
             data: {
                 name: parsed.name || '',
@@ -1450,12 +1472,13 @@ export const ocrBusinessCard = async (req, res) => {
                 address: parsed.address || '',
                 city: parsed.city || '',
                 state: parsed.state || '',
-                pin_code: '',
+                country: parsed.country || '',
+                pin_code: parsed.pin_code || '',
             },
         });
     } catch (error) {
         console.error('OCR business card error:', error);
-        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        cleanup();
         res.status(500).json({ success: false, message: error.message || "Failed to process business card" });
     }
 };
