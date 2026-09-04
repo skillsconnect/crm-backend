@@ -1,4 +1,5 @@
 import db from '../../../config/knex.js';
+import { resolveLocation } from '../../../helpers/V1/locationResolver.js';
 
 const TABLES = {
     CLIENTS: 'crm_clients',
@@ -60,6 +61,9 @@ export const createClient = async (req, res) => {
             return res.status(400).json({ success: false, message: "Company name is required" });
         }
 
+        // `country` is an integer FK to ups_countries; `state`/`city` are names.
+        const location = await resolveLocation({ country, state, city });
+
         const result = await db.transaction(async (trx) => {
             const [insertedId] = await trx(TABLES.CLIENTS).insert({
                 company: company.trim(),
@@ -68,10 +72,10 @@ export const createClient = async (req, res) => {
                 email: email || null,
                 website: website || null,
                 address: address || null,
-                city: city || null,
-                state: state || null,
+                city: location.city,
+                state: location.state,
                 zip: zip || null,
-                country: country || 0,
+                country: location.country,
                 notes: notes || null,
                 lead_id: lead_id || null,
                 created_by: currentUserId(req),
@@ -111,9 +115,23 @@ export const updateClient = async (req, res) => {
 
         const updateData = { updated_by: currentUserId(req) };
         for (const field of UPDATABLE_CLIENT_FIELDS) {
+            if (field === 'country' || field === 'state' || field === 'city') continue;
             if (req.body[field] !== undefined) updateData[field] = req.body[field];
         }
         if (updateData.company !== undefined) updateData.company = String(updateData.company).trim();
+
+        // country/state/city resolved together against the master tables so the
+        // integer country FK and the state/city names stay consistent.
+        if (['country', 'state', 'city'].some((f) => req.body[f] !== undefined)) {
+            const location = await resolveLocation({
+                country: req.body.country !== undefined ? req.body.country : existing.country,
+                state: req.body.state !== undefined ? req.body.state : existing.state,
+                city: req.body.city !== undefined ? req.body.city : existing.city,
+            });
+            updateData.country = location.country;
+            updateData.state = location.state;
+            updateData.city = location.city;
+        }
 
         await db(TABLES.CLIENTS).where('id', id).update(updateData);
         const updated = await db(TABLES.CLIENTS).where('id', id).first();
