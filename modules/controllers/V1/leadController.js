@@ -6,6 +6,7 @@ import OCRService from '../../../services/ocrService.js';
 import { uploadToAzureBlob, getAzureBlobStream, deleteBlobByUrl } from '../../../helpers/V1/azureBlobService.js';
 import { notifyUser } from '../../../services/notificationService.js';
 import { hasGlobalLeadView, scopeLeadsForUser } from '../../../helpers/V1/leadAccess.js';
+import { resolveLocation } from '../../../helpers/V1/locationResolver.js';
 
 const TABLES = {
     LEADS: 'crm_leads',
@@ -282,9 +283,9 @@ export const deleteSource = async (req, res) => {
 
 export const getAllTags = async (req, res) => {
     try {
-        const { search } = req.query;
+        const term = sanitizeSearchTerm(req.query.search);
         let query = db(TABLES.TAGS).select('*').orderBy('name', 'asc');
-        if (search) query = query.whereILike('name', `%${search}%`);
+        if (term) query = query.whereILike('name', `%${term}%`);
         const tags = await query;
         res.status(200).json({ success: true, data: tags || [] });
     } catch (error) {
@@ -463,13 +464,22 @@ export const getLeadFormData = async (req, res) => {
 
 // ==================== LEAD LIST / KANBAN ====================
 
+// Keep search terms to plain text: letters, digits, spaces and a few safe
+// punctuation marks (. - _ @ & / + ()), capped at 100 chars. Drops quotes,
+// commas, $, %, ; and other noise. Mirrors the client-side sanitizer.
+const sanitizeSearchTerm = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.replace(/[^a-zA-Z0-9\s.\-_@&/+()]/g, '').replace(/\s{2,}/g, ' ').trim().slice(0, 100);
+};
+
 const buildLeadFilters = (qb, { search, status, source, assigned, tag }) => {
-    if (search) {
+    const term = sanitizeSearchTerm(search);
+    if (term) {
         qb.where((builder) => {
-            builder.where('l.name', 'like', `%${search}%`)
-                .orWhere('l.email', 'like', `%${search}%`)
-                .orWhere('l.phonenumber', 'like', `%${search}%`)
-                .orWhere('l.company', 'like', `%${search}%`);
+            builder.where('l.name', 'like', `%${term}%`)
+                .orWhere('l.email', 'like', `%${term}%`)
+                .orWhere('l.phonenumber', 'like', `%${term}%`)
+                .orWhere('l.company', 'like', `%${term}%`);
         });
     }
     if (status) qb.where('l.status', status);
@@ -713,6 +723,10 @@ export const createLead = async (req, res) => {
             return res.status(400).json({ success: false, message: "Lead name is required" });
         }
 
+        // `country` is an integer FK to ups_countries; `state`/`city` are names.
+        // Accept an id or a name for any of them and normalise via the masters.
+        const location = await resolveLocation({ country, state, city });
+
         const insertData = {
             name: name.trim(),
             email: email || null,
@@ -726,9 +740,9 @@ export const createLead = async (req, res) => {
             tags: tags || null,
             description: description || null,
             address: address || null,
-            city: city || null,
-            state: state || null,
-            country: country || 0,
+            city: location.city,
+            state: location.state,
+            country: location.country,
             zip: zip || null,
             website: website || null,
             lead_value: (lead_value === '' || lead_value === null || lead_value === undefined || Number.isNaN(Number(lead_value))) ? null : lead_value,
@@ -804,10 +818,13 @@ export const updateLead = async (req, res) => {
                 updateData.name = String(req.body.name).trim();
             } else if (['is_public', 'public_contacted_today', 'persist_mail_24h'].includes(field)) {
                 updateData[field] = Boolean(req.body[field]);
-            } else if (['status', 'source', 'assigned', 'country'].includes(field)) {
+            } else if (['status', 'source', 'assigned'].includes(field)) {
                 // NOT NULL int columns (default 0) — the form sends null/"" when
                 // nothing is picked, so coerce that to 0 rather than a null write.
                 updateData[field] = req.body[field] || 0;
+            } else if (['country', 'state', 'city'].includes(field)) {
+                // Handled together after the loop via resolveLocation().
+                continue;
             } else if (field === 'lead_value') {
                 // decimal column — "" from the form is not a valid decimal (strict
                 // mode rejects it), so store NULL when empty / non-numeric.
@@ -816,6 +833,20 @@ export const updateLead = async (req, res) => {
             } else {
                 updateData[field] = req.body[field];
             }
+        }
+
+        // country/state/city: resolve as a unit against the master tables so the
+        // integer country FK and the state/city names stay consistent. Only
+        // touch them when the client actually sent one of the three.
+        if (['country', 'state', 'city'].some((f) => req.body[f] !== undefined)) {
+            const location = await resolveLocation({
+                country: req.body.country !== undefined ? req.body.country : existing.country,
+                state: req.body.state !== undefined ? req.body.state : existing.state,
+                city: req.body.city !== undefined ? req.body.city : existing.city,
+            });
+            updateData.country = location.country;
+            updateData.state = location.state;
+            updateData.city = location.city;
         }
 
         if (updateData.assigned && Number(updateData.assigned) !== Number(existing.assigned)) {
@@ -1326,16 +1357,46 @@ const CSV_HEADER_MAP = {
     'alternate emails': 'alternative_email',
 };
 
+// crm_leads.lead_value is DECIMAL(15,2) — strict mode rejects "" or free text.
+// Strip currency symbols / thousands separators, keep a real number or null.
+const toDecimalOrNull = (value) => {
+    if (value === undefined || value === null || String(value).trim() === '') return null;
+    const s = String(value).trim().replace(/[,\s]/g, '');
+    const match = s.match(/-?\d+(?:\.\d+)?$/);
+    if (!match) return null;
+    // Anything before the number must be a bare currency marker, else it's noise.
+    const prefix = s.slice(0, s.length - match[0].length);
+    if (prefix && !/^(?:rs\.?|inr|usd|\$|₹|€|£)$/i.test(prefix)) return null;
+    const num = Number(match[0]);
+    return Number.isNaN(num) ? null : num;
+};
+
+// Column length caps from the crm_leads schema — strict mode errors instead of
+// truncating, so clip free-text CSV values to fit.
+const COLUMN_MAX_LEN = {
+    name: 191, title: 191, company: 191, sector: 191,
+    email: 150, website: 150, alternative_email: 255,
+    phonenumber: 50, employee_count: 50, zip: 15,
+    send_introductry_mail: 255, contact_date_time: 255,
+    event_name: 255, uploaded_card_name: 255,
+};
+
+const clip = (value, key) => {
+    if (typeof value !== 'string') return value;
+    const max = COLUMN_MAX_LEN[key];
+    return max && value.length > max ? value.slice(0, max) : value;
+};
+
 const normalizeCSVRow = (row) => {
     const normalized = {};
     for (const [header, value] of Object.entries(row)) {
         const key = CSV_HEADER_MAP[header.trim().toLowerCase()];
-        if (key) normalized[key] = typeof value === 'string' ? value.trim() : value;
+        if (key) normalized[key] = clip(typeof value === 'string' ? value.trim() : value, key);
     }
     return normalized;
 };
 
-const resolveImportRow = async (row, fallback, statusByName, sourceByName) => {
+const resolveImportRow = async (row, fallback, statusByName, sourceByName, locationCache) => {
     const name = row.name || '/';
     const email = row.email || null;
 
@@ -1349,20 +1410,27 @@ const resolveImportRow = async (row, fallback, statusByName, sourceByName) => {
         sourceId = sourceByName.get(row.source.toLowerCase());
     }
 
+    // country column is an integer FK; state/city are names. The CSV carries
+    // free text ("India", "Maharashtra", "Mumbai") — resolve against masters.
+    const location = await resolveLocation(
+        { country: row.country, state: row.state, city: row.city },
+        { cache: locationCache },
+    );
+
     return {
         name,
         email,
         company: row.company || null,
         title: row.title || null,
         description: row.description || null,
-        country: row.country || 0,
+        country: location.country,
         zip: row.zip || null,
-        city: row.city || null,
-        state: row.state || null,
+        city: location.city,
+        state: location.state,
         address: row.address || null,
         website: row.website || null,
         phonenumber: row.phonenumber || null,
-        lead_value: row.lead_value || null,
+        lead_value: toDecimalOrNull(row.lead_value),
         send_introductry_mail: row.send_introductry_mail || null,
         contact_date_time: row.contact_date_time || null,
         event_name: row.event_name || null,
@@ -1390,6 +1458,7 @@ export const simulateLeadsImportCSV = async (req, res) => {
         const records = req.parsedCSV || [];
         const { status, source, responsible } = req.body;
         const { statusByName, sourceByName } = await loadMasterMaps();
+        const locationCache = {};
 
         const previewRows = [];
         let ready = 0;
@@ -1397,7 +1466,7 @@ export const simulateLeadsImportCSV = async (req, res) => {
 
         for (let i = 0; i < records.length; i += 1) {
             const normalized = normalizeCSVRow(records[i]);
-            const resolved = await resolveImportRow(normalized, { status, source }, statusByName, sourceByName);
+            const resolved = await resolveImportRow(normalized, { status, source }, statusByName, sourceByName, locationCache);
 
             let result = 'ready';
             let reason = '';
@@ -1410,6 +1479,21 @@ export const simulateLeadsImportCSV = async (req, res) => {
                 }
             }
 
+            // Flag values that were adjusted to fit the target columns (non-fatal
+            // — the import still succeeds) so the user can fix the CSV first.
+            const notes = [];
+            if (normalized.country && !resolved.country) notes.push(`country "${normalized.country}" not in master`);
+            if (normalized.state && resolved.state && resolved.state.toLowerCase() !== normalized.state.toLowerCase()) {
+                notes.push(`state -> "${resolved.state}"`);
+            }
+            if (normalized.city && resolved.city && resolved.city.toLowerCase() !== normalized.city.toLowerCase()) {
+                notes.push(`city -> "${resolved.city}"`);
+            }
+            if (normalized.lead_value && resolved.lead_value === null) {
+                notes.push(`lead value "${normalized.lead_value}" is not a number`);
+            }
+            if (result === 'ready' && notes.length) reason = notes.join('; ');
+
             if (result === 'ready') ready += 1; else skipped += 1;
 
             previewRows.push({
@@ -1419,6 +1503,9 @@ export const simulateLeadsImportCSV = async (req, res) => {
                 company: resolved.company,
                 status: normalized.status || '',
                 source: normalized.source || '',
+                country: resolved.country || '',
+                state: resolved.state || '',
+                city: resolved.city || '',
                 result,
                 reason,
             });
@@ -1448,13 +1535,14 @@ export const importLeadsCSV = async (req, res) => {
         const records = req.parsedCSV || [];
         const { status, source, responsible } = req.body;
         const { statusByName, sourceByName } = await loadMasterMaps();
+        const locationCache = {};
 
         let inserted = 0;
         const skippedRows = [];
 
         for (let i = 0; i < records.length; i += 1) {
             const normalized = normalizeCSVRow(records[i]);
-            const resolved = await resolveImportRow(normalized, { status, source }, statusByName, sourceByName);
+            const resolved = await resolveImportRow(normalized, { status, source }, statusByName, sourceByName, locationCache);
 
             if (resolved.email) {
                 const duplicate = await db(TABLES.LEADS).where('email', resolved.email).where('is_deleted', false).first();
