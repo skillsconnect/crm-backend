@@ -1583,14 +1583,25 @@ export const importLeadsCSV = async (req, res) => {
 
 export const exportLeadsCSV = async (req, res) => {
     try {
-        const { search, status, source, assigned, tag } = req.query;
+        const { search, status, source, assigned, tag, ids } = req.query;
+
+        const selectedIds = String(ids || '')
+            .split(',')
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0);
 
         const isGlobalView = await hasGlobalLeadView(req);
 
         const leads = await withLeadJoins(db(`${TABLES.LEADS} as l`))
             .modify(activeLeadScope)
             .modify(scopeLeadsForUser(req, isGlobalView))
-            .modify((qb) => buildLeadFilters(qb, { search, status, source, assigned, tag }))
+            .modify((qb) => {
+                if (selectedIds.length) {
+                    qb.whereIn('l.id', selectedIds);
+                } else {
+                    buildLeadFilters(qb, { search, status, source, assigned, tag });
+                }
+            })
             .select(
                 'l.name', 'l.email', 'l.phonenumber', 'l.company', 'l.title', 'l.tags', 'l.description',
                 's.name as status_name', 'src.name as source_name',
