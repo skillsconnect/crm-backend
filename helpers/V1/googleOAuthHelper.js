@@ -23,9 +23,14 @@ export class GoogleOAuthHelper {
     
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
+      // Scopes must match those registered on the Google OAuth consent screen.
+      // 'https://mail.google.com/' grants full Gmail access (send + read),
+      // covering both campaign sending and reply/bounce tracking.
       scope: [
-        'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.readonly'
+        'openid',
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'https://mail.google.com/'
       ],
       state: state,
       prompt: 'consent'
@@ -225,7 +230,11 @@ export class GoogleOAuthHelper {
 
     return oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      scope: ['https://www.googleapis.com/auth/calendar.events'],
+      // Matches the calendar scopes registered on the OAuth consent screen.
+      scope: [
+        'https://www.googleapis.com/auth/calendar',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
       state,
       prompt: 'consent',
     });
