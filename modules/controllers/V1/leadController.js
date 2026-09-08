@@ -296,14 +296,18 @@ export const getAllTags = async (req, res) => {
 
 export const createTag = async (req, res) => {
     try {
-        const { name } = req.body;
+        const { name, description } = req.body;
         const trimmedName = name && name.trim() ? name.trim() : null;
         if (!trimmedName) return res.status(400).json({ success: false, message: "Tag name is required" });
 
         const duplicate = await db(TABLES.TAGS).where('name', trimmedName).first();
         if (duplicate) return res.status(400).json({ success: false, message: "Tag already exists" });
 
-        const [insertedId] = await db(TABLES.TAGS).insert({ name: trimmedName, created_by: currentUserId(req) });
+        const [insertedId] = await db(TABLES.TAGS).insert({
+            name: trimmedName,
+            description: description && description.trim() ? description.trim() : null,
+            created_by: currentUserId(req),
+        });
         const newTag = await db(TABLES.TAGS).where('id', insertedId).first();
         res.status(201).json({ success: true, message: "Tag created successfully", data: newTag });
     } catch (error) {
@@ -315,7 +319,7 @@ export const createTag = async (req, res) => {
 export const updateTag = async (req, res) => {
     try {
         const { tagId } = req.params;
-        const { name } = req.body;
+        const { name, description } = req.body;
         const trimmedName = name && name.trim() ? name.trim() : null;
         if (!trimmedName) return res.status(400).json({ success: false, message: "Tag name is required" });
 
@@ -325,7 +329,10 @@ export const updateTag = async (req, res) => {
         const duplicate = await db(TABLES.TAGS).where('name', trimmedName).whereNot('id', tagId).first();
         if (duplicate) return res.status(400).json({ success: false, message: "Another tag with this name exists" });
 
-        await db(TABLES.TAGS).where('id', tagId).update({ name: trimmedName });
+        await db(TABLES.TAGS).where('id', tagId).update({
+            name: trimmedName,
+            description: description && description.trim() ? description.trim() : null,
+        });
         const updatedTag = await db(TABLES.TAGS).where('id', tagId).first();
         res.status(200).json({ success: true, message: "Tag updated successfully", data: updatedTag });
     } catch (error) {
