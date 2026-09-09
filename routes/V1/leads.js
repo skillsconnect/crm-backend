@@ -6,14 +6,17 @@ import {
     getStatusById,
     saveStatus,
     deleteStatus,
+    reorderStatuses,
     getAllSources,
     getSourceById,
     saveSource,
     deleteSource,
+    reorderSources,
     getAllTags,
     createTag,
     updateTag,
     deleteTag,
+    reorderTags,
     assignLeadTags,
     getSavedFilters,
     createSavedFilter,
@@ -144,6 +147,7 @@ router.get('/locations/cities', view, getCities);
 router.get('/statuses', view, getAllStatuses);
 router.get('/statuses/:id', view, getStatusById);
 router.post('/statuses', edit, saveStatus);
+router.post('/statuses/reorder', edit, reorderStatuses);
 router.put('/statuses/:id', edit, saveStatus);
 router.delete('/statuses/:id', edit, deleteStatus);
 
@@ -151,12 +155,14 @@ router.delete('/statuses/:id', edit, deleteStatus);
 router.get('/sources', view, getAllSources);
 router.get('/sources/:id', view, getSourceById);
 router.post('/sources', edit, saveSource);
+router.post('/sources/reorder', edit, reorderSources);
 router.put('/sources/:id', edit, saveSource);
 router.delete('/sources/:id', edit, deleteSource);
 
 // ==================== LEAD TAGS ====================
 router.get('/tags', view, getAllTags);
 router.post('/tags', edit, createTag);
+router.post('/tags/reorder', edit, reorderTags);
 router.put('/tags/:tagId', edit, updateTag);
 router.delete('/tags/:tagId', edit, deleteTag);
 
