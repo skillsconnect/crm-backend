@@ -11,6 +11,7 @@ import { setupWebSocket } from './helpers/V1/websocket.js';
 import { startDemoReminderScheduler } from './services/demoReminderScheduler.js';
 import { startRecurringInvoiceScheduler } from './services/recurringInvoiceService.js';
 const { consumerSendMailLog ,consumerExcelToExport  } = await import(`./rabbitmq/consumer.js`);
+const { QUEUES } = await import(`./rabbitmq/queues.js`);
 
 const Website_ver = process.env.WEBSITE_VERSION;
 
@@ -84,11 +85,11 @@ app.get('/', (req, res) => {
 // for send mail log
 // setTimeout(async () => {
   // for send mail log
-consumerSendMailLog("send_email_log_queue", "notifications_exchange", "email_log_notification");
+consumerSendMailLog(QUEUES.EMAIL_LOG, "notifications_exchange", "email_log_notification");
 // send mail instant log
-consumerSendMailLog("send_email_instant_log_queue", "notifications_exchange", "email_instant_log_notification");
+consumerSendMailLog(QUEUES.EMAIL_INSTANT_LOG, "notifications_exchange", "email_instant_log_notification");
 // send mail excel to export
-consumerExcelToExport("send_email_excel_export_queue", "notifications_exchange", "excel_export_notification");
+consumerExcelToExport(QUEUES.EMAIL_EXCEL_EXPORT, "notifications_exchange", "excel_export_notification");
 // }, 2000);
 
 app.use("/crm", CRMRoutes);

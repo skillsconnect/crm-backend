@@ -203,7 +203,7 @@ export const createDemo = async (req, res) => {
             return res.status(400).json({ success: false, message: "lead_id, assigned_staff_id and demo_date_time are required" });
         }
 
-        const lead = await db(TABLES.LEADS).where('id', lead_id).first();
+        const lead = await db(TABLES.LEADS).where('id', lead_id).where('is_deleted', false).first();
         if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
 
         const duration = duration_minutes || 30;
