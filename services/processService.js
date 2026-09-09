@@ -51,6 +51,17 @@ class ProcessService {
                         failed++;
                         continue;
                     }
+
+                    // Lead was removed from the pipeline after this step was
+                    // scheduled — deactivate it instead of emailing a dead lead.
+                    if (lead[0].is_deleted) {
+                        await CommonModel.updateData(
+                            TABLES.PROCESS_STAFF,
+                            { status: 'In-active', updated_on: new Date() },
+                            `id = ${process.id}`
+                        );
+                        continue;
+                    }
                     
                     // Prepare email data
                     const emailData = {

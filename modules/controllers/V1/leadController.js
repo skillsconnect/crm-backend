@@ -30,6 +30,17 @@ const TABLES = {
 // kanban, summary counts) — mirrors the legacy CRM's default Kanban/list view.
 const activeLeadScope = (qb) => qb.where('l.lost', false).where('l.junk', false).where('l.is_deleted', false);
 
+// The list view can widen the default scope via ?lead_state=lost|junk|all.
+// Deleted leads stay hidden in every case.
+const LEAD_STATES = ['active', 'lost', 'junk', 'all'];
+const leadStateScope = (state) => (qb) => {
+    qb.where('l.is_deleted', false);
+    if (state === 'lost') qb.where('l.lost', true);
+    else if (state === 'junk') qb.where('l.junk', true);
+    else if (state === 'all') { /* active + lost + junk */ }
+    else qb.where('l.lost', false).where('l.junk', false);
+};
+
 const currentUserId = (req) => req.user?.id || 1;
 const currentUserName = (req) => req.user?.full_name || `${req.user?.first_name || ''} ${req.user?.last_name || ''}`.trim() || 'System';
 
@@ -42,6 +53,43 @@ const logActivity = async (leadId, description, req, trx = null) => {
         staffid: currentUserId(req),
         full_name: currentUserName(req),
     });
+};
+
+// When a lead leaves the pipeline (deleted / mass-deleted) tear down everything
+// still scheduled against it, so background workers never act on a lead that no
+// longer exists: no demo reminders, no drip/automation emails, no intro emails,
+// no lead reminders surfacing on dashboards.
+const cancelLeadFutureWork = async (leadIds, userId) => {
+    const ids = (Array.isArray(leadIds) ? leadIds : [leadIds]).map(Number).filter(Boolean);
+    if (!ids.length) return;
+    const now = new Date();
+
+    // Best-effort cleanup — the lead is already soft-deleted, so a failure here
+    // must not fail the request. Each worker also guards against deleted leads.
+    try {
+        await db('crm_demo_schedules')
+            .whereIn('lead_id', ids)
+            .where('status', 'Scheduled')
+            .update({ status: 'Cancelled', updated_by: userId });
+
+        await db(TABLES.PROCESS_STAFF)
+            .whereIn('lead_id', ids)
+            .where('email_sent', 'pending')
+            .update({ status: 'In-active', updated_by: userId });
+
+        await db(TABLES.EMAIL_QUEUE)
+            .whereIn('lead_id', ids)
+            .where('status', 'pending')
+            .del();
+
+        await db(TABLES.REMINDERS)
+            .whereIn('lead_id', ids)
+            .where('isnotified', false)
+            .where('date', '>', now)
+            .del();
+    } catch (error) {
+        console.error('cancelLeadFutureWork failed:', error?.message || error);
+    }
 };
 
 const queueIntroductoryEmail = async (leadId, data) => {
@@ -561,6 +609,7 @@ const buildProcessState = (processSteps, processStaffRows) => {
 export const getAllLeads = async (req, res) => {
     try {
         const { search, status, source, assigned, tag, sort_by = 'id', sort_dir = 'desc', page = 1, limit = 50 } = req.query;
+        const leadState = LEAD_STATES.includes(req.query.lead_state) ? req.query.lead_state : 'active';
         const pageNum = Math.max(parseInt(page) || 1, 1);
         const pageSize = Math.max(parseInt(limit) || 50, 1);
         const offset = (pageNum - 1) * pageSize;
@@ -572,7 +621,7 @@ export const getAllLeads = async (req, res) => {
         const isGlobalView = await hasGlobalLeadView(req);
 
         const baseQuery = () => withLeadJoins(db(`${TABLES.LEADS} as l`))
-            .modify(activeLeadScope)
+            .modify(leadStateScope(leadState))
             .modify(scopeLeadsForUser(req, isGlobalView))
             .modify((qb) => buildLeadFilters(qb, { search, status, source, assigned, tag }));
 
@@ -587,7 +636,7 @@ export const getAllLeads = async (req, res) => {
 
         // Per-status counts, restricted to the same set of leads the user can see.
         const statusCountRows = await db(`${TABLES.LEADS} as l`)
-            .modify(activeLeadScope)
+            .modify(leadStateScope(leadState))
             .modify(scopeLeadsForUser(req, isGlobalView))
             .groupBy('l.status')
             .select('l.status')
@@ -964,6 +1013,7 @@ export const deleteLead = async (req, res) => {
         if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
 
         await db(TABLES.LEADS).where('id', id).update({ is_deleted: true, updated_by: currentUserId(req) });
+        await cancelLeadFutureWork(id, currentUserId(req));
         res.status(200).json({ success: true, message: "Lead deleted successfully" });
     } catch (error) {
         console.error('Error:', error);
@@ -994,6 +1044,7 @@ export const bulkActionLeads = async (req, res) => {
 
         if (mass_delete) {
             await db(TABLES.LEADS).whereIn('id', scopedIds).update({ is_deleted: true, updated_by: currentUserId(req) });
+            await cancelLeadFutureWork(scopedIds, currentUserId(req));
             return res.status(200).json({ success: true, message: `${scopedIds.length} leads deleted successfully` });
         }
 
@@ -1509,63 +1560,114 @@ const loadMasterMaps = async () => {
     };
 };
 
+const VALID_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Compare phone numbers by their digits only, last 10 (ignores +country code,
+// spaces, dashes, brackets) so "+91 98765-43210" and "9876543210" collide.
+const normalizePhoneDigits = (value) => {
+    const digits = String(value || '').replace(/\D/g, '');
+    if (!digits) return '';
+    return digits.length > 10 ? digits.slice(-10) : digits;
+};
+
+// One validation pass shared by simulate + import. Returns a per-row plan with
+// `result` ('ready' | 'skip'), the fatal `errors` that cause a skip, and
+// non-fatal `warnings` (values auto-adjusted to fit the target columns).
+const buildImportPlan = async (records, fallback, maps, locationCache) => {
+    const { statusByName, sourceByName } = maps;
+
+    const resolvedRows = [];
+    const emailSet = new Set();
+    for (const record of records) {
+        const normalized = normalizeCSVRow(record);
+        const resolved = await resolveImportRow(normalized, fallback, statusByName, sourceByName, locationCache);
+        resolvedRows.push({ normalized, resolved });
+        if (resolved.email) emailSet.add(resolved.email);
+    }
+
+    const emails = [...emailSet];
+    const existingEmails = emails.length
+        ? new Set(
+            (await db(TABLES.LEADS).whereIn('email', emails).where('is_deleted', false).select('email'))
+                .map((r) => String(r.email).toLowerCase()),
+        )
+        : new Set();
+
+    const hasPhone = resolvedRows.some((r) => r.resolved.phonenumber);
+    const existingPhones = hasPhone
+        ? new Set(
+            (await db(TABLES.LEADS).where('is_deleted', false).whereNotNull('phonenumber').distinct('phonenumber'))
+                .map((r) => normalizePhoneDigits(r.phonenumber))
+                .filter(Boolean),
+        )
+        : new Set();
+
+    const seenEmails = new Set();
+    const seenPhones = new Set();
+    const plan = [];
+
+    resolvedRows.forEach(({ normalized, resolved }, i) => {
+        const errors = [];
+        const warnings = [];
+
+        const email = resolved.email ? String(resolved.email).toLowerCase() : '';
+        const phone = normalizePhoneDigits(resolved.phonenumber);
+
+        if (!email && !phone) errors.push('Missing email and phone number');
+        if (email && !VALID_EMAIL_RE.test(email)) errors.push('Invalid email format');
+        if (email && existingEmails.has(email)) errors.push('Duplicate email (already in CRM)');
+        if (phone && existingPhones.has(phone)) errors.push('Duplicate phone number (already in CRM)');
+        if (email && seenEmails.has(email)) errors.push('Duplicate email in file');
+        if (phone && seenPhones.has(phone)) errors.push('Duplicate phone number in file');
+
+        if (email) seenEmails.add(email);
+        if (phone) seenPhones.add(phone);
+
+        if (normalized.country && !resolved.country) warnings.push(`country "${normalized.country}" not in master`);
+        if (normalized.state && resolved.state && resolved.state.toLowerCase() !== normalized.state.toLowerCase()) {
+            warnings.push(`state -> "${resolved.state}"`);
+        }
+        if (normalized.city && resolved.city && resolved.city.toLowerCase() !== normalized.city.toLowerCase()) {
+            warnings.push(`city -> "${resolved.city}"`);
+        }
+        if (normalized.lead_value && resolved.lead_value === null) {
+            warnings.push(`lead value "${normalized.lead_value}" is not a number`);
+        }
+
+        const result = errors.length ? 'skip' : 'ready';
+        plan.push({
+            row: i + 1,
+            name: resolved.name,
+            email: resolved.email || '',
+            phonenumber: resolved.phonenumber || '',
+            company: resolved.company || '',
+            status: normalized.status || '',
+            source: normalized.source || '',
+            country: resolved.country || '',
+            state: resolved.state || '',
+            city: resolved.city || '',
+            result,
+            errors,
+            warnings,
+            reason: errors.length ? errors.join('; ') : warnings.join('; '),
+            resolved,
+        });
+    });
+
+    return plan;
+};
+
 export const simulateLeadsImportCSV = async (req, res) => {
     try {
         const records = req.parsedCSV || [];
-        const { status, source, responsible } = req.body;
-        const { statusByName, sourceByName } = await loadMasterMaps();
-        const locationCache = {};
+        const { status, source } = req.body;
+        const maps = await loadMasterMaps();
 
-        const previewRows = [];
-        let ready = 0;
-        let skipped = 0;
+        const plan = await buildImportPlan(records, { status, source }, maps, {});
+        const ready = plan.filter((p) => p.result === 'ready').length;
 
-        for (let i = 0; i < records.length; i += 1) {
-            const normalized = normalizeCSVRow(records[i]);
-            const resolved = await resolveImportRow(normalized, { status, source }, statusByName, sourceByName, locationCache);
-
-            let result = 'ready';
-            let reason = '';
-
-            if (resolved.email) {
-                const duplicate = await db(TABLES.LEADS).where('email', resolved.email).where('is_deleted', false).first();
-                if (duplicate) {
-                    result = 'skip';
-                    reason = 'Duplicate email';
-                }
-            }
-
-            // Flag values that were adjusted to fit the target columns (non-fatal
-            // — the import still succeeds) so the user can fix the CSV first.
-            const notes = [];
-            if (normalized.country && !resolved.country) notes.push(`country "${normalized.country}" not in master`);
-            if (normalized.state && resolved.state && resolved.state.toLowerCase() !== normalized.state.toLowerCase()) {
-                notes.push(`state -> "${resolved.state}"`);
-            }
-            if (normalized.city && resolved.city && resolved.city.toLowerCase() !== normalized.city.toLowerCase()) {
-                notes.push(`city -> "${resolved.city}"`);
-            }
-            if (normalized.lead_value && resolved.lead_value === null) {
-                notes.push(`lead value "${normalized.lead_value}" is not a number`);
-            }
-            if (result === 'ready' && notes.length) reason = notes.join('; ');
-
-            if (result === 'ready') ready += 1; else skipped += 1;
-
-            previewRows.push({
-                row: i + 1,
-                name: resolved.name,
-                email: resolved.email,
-                company: resolved.company,
-                status: normalized.status || '',
-                source: normalized.source || '',
-                country: resolved.country || '',
-                state: resolved.state || '',
-                city: resolved.city || '',
-                result,
-                reason,
-            });
-        }
+        // Drop the internal `resolved` payload from the wire response.
+        const previewRows = plan.map(({ resolved, ...rest }) => rest);
 
         if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
 
@@ -1575,7 +1677,7 @@ export const simulateLeadsImportCSV = async (req, res) => {
             data: {
                 total_rows: records.length,
                 ready_rows: ready,
-                skipped_rows: skipped,
+                skipped_rows: records.length - ready,
                 preview_rows: previewRows,
             },
         });
@@ -1590,26 +1692,27 @@ export const importLeadsCSV = async (req, res) => {
     try {
         const records = req.parsedCSV || [];
         const { status, source, responsible } = req.body;
-        const { statusByName, sourceByName } = await loadMasterMaps();
-        const locationCache = {};
+        const maps = await loadMasterMaps();
+
+        const plan = await buildImportPlan(records, { status, source }, maps, {});
 
         let inserted = 0;
         const skippedRows = [];
 
-        for (let i = 0; i < records.length; i += 1) {
-            const normalized = normalizeCSVRow(records[i]);
-            const resolved = await resolveImportRow(normalized, { status, source }, statusByName, sourceByName, locationCache);
-
-            if (resolved.email) {
-                const duplicate = await db(TABLES.LEADS).where('email', resolved.email).where('is_deleted', false).first();
-                if (duplicate) {
-                    skippedRows.push({ row: i + 1, name: resolved.name, email: resolved.email, reason: 'Duplicate email' });
-                    continue;
-                }
+        for (const item of plan) {
+            if (item.result === 'skip') {
+                skippedRows.push({
+                    row: item.row,
+                    name: item.name,
+                    email: item.email,
+                    phonenumber: item.phonenumber,
+                    reason: item.reason,
+                });
+                continue;
             }
 
             await db(TABLES.LEADS).insert({
-                ...resolved,
+                ...item.resolved,
                 assigned: responsible || 0,
                 addedfrom: currentUserId(req),
                 dateadded: new Date(),

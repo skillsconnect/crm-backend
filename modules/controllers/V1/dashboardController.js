@@ -43,6 +43,7 @@ export const getDashboardStats = async (req, res) => {
             .select('d.id', 'd.demo_date_time', 'd.duration_minutes', 'l.name as lead_name', 'l.company as lead_company', 'u.first_name as staff_firstname')
             .where('d.status', 'Scheduled')
             .whereBetween('d.demo_date_time', [now, in48h])
+            .where((qb) => qb.where('l.is_deleted', false).orWhereNull('l.id'))
             .orderBy('d.demo_date_time', 'asc')
             .limit(6);
 
@@ -75,6 +76,7 @@ export const getDashboardStats = async (req, res) => {
             .select('r.id', 'r.description', 'r.date', 'l.name as lead_name')
             .where('r.isnotified', false)
             .whereBetween('r.date', [now, in48h])
+            .where((qb) => qb.where('l.is_deleted', false).orWhereNull('l.id'))
             .orderBy('r.date', 'asc')
             .limit(6);
 

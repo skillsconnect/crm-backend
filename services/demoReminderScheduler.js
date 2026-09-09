@@ -32,7 +32,9 @@ async function checkAndSendReminders() {
                 'u.first_name as staff_firstname', 'u.email as staff_email'
             )
             .where('d.status', 'Scheduled')
-            .where('d.demo_date_time', '>', now);
+            .where('d.demo_date_time', '>', now)
+            // Never remind for a demo whose lead has been removed from the pipeline.
+            .where((qb) => qb.where('l.is_deleted', false).orWhereNull('l.id'));
 
         for (const demo of demos) {
             const minutesUntil = (new Date(demo.demo_date_time).getTime() - now.getTime()) / 60000;
