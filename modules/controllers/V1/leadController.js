@@ -179,6 +179,21 @@ export const deleteStatus = async (req, res) => {
     }
 };
 
+export const reorderStatuses = async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!Array.isArray(ids) || !ids.length) {
+            return res.status(400).json({ success: false, message: "ids array is required" });
+        }
+
+        await Promise.all(ids.map((id, index) => db(TABLES.STATUS).where('id', id).update({ sequence: index + 1 })));
+        res.status(200).json({ success: true, message: "Statuses reordered successfully" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 // ==================== LEAD SOURCE CRUD ====================
 
 export const getAllSources = async (req, res) => {
@@ -279,12 +294,27 @@ export const deleteSource = async (req, res) => {
     }
 };
 
+export const reorderSources = async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!Array.isArray(ids) || !ids.length) {
+            return res.status(400).json({ success: false, message: "ids array is required" });
+        }
+
+        await Promise.all(ids.map((id, index) => db(TABLES.SOURCE).where('id', id).update({ sequence: index + 1 })));
+        res.status(200).json({ success: true, message: "Sources reordered successfully" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 // ==================== LEAD TAGS ====================
 
 export const getAllTags = async (req, res) => {
     try {
         const term = sanitizeSearchTerm(req.query.search);
-        let query = db(TABLES.TAGS).select('*').orderBy('name', 'asc');
+        let query = db(TABLES.TAGS).select('*').orderBy('sequence', 'asc').orderBy('name', 'asc');
         if (term) query = query.whereILike('name', `%${term}%`);
         const tags = await query;
         res.status(200).json({ success: true, data: tags || [] });
@@ -303,10 +333,14 @@ export const createTag = async (req, res) => {
         const duplicate = await db(TABLES.TAGS).where('name', trimmedName).first();
         if (duplicate) return res.status(400).json({ success: false, message: "Tag already exists" });
 
+        const maxSequence = await db(TABLES.TAGS).max('sequence as max_seq').first();
+        const nextSequence = (maxSequence?.max_seq || 0) + 1;
+
         const [insertedId] = await db(TABLES.TAGS).insert({
             name: trimmedName,
             description: description && description.trim() ? description.trim() : null,
             created_by: currentUserId(req),
+            sequence: nextSequence,
         });
         const newTag = await db(TABLES.TAGS).where('id', insertedId).first();
         res.status(201).json({ success: true, message: "Tag created successfully", data: newTag });
@@ -349,6 +383,21 @@ export const deleteTag = async (req, res) => {
 
         await db(TABLES.TAGS).where('id', tagId).del();
         res.status(200).json({ success: true, message: "Tag deleted successfully" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const reorderTags = async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!Array.isArray(ids) || !ids.length) {
+            return res.status(400).json({ success: false, message: "ids array is required" });
+        }
+
+        await Promise.all(ids.map((id, index) => db(TABLES.TAGS).where('id', id).update({ sequence: index + 1 })));
+        res.status(200).json({ success: true, message: "Tags reordered successfully" });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ success: false, message: "Internal Server Error" });
