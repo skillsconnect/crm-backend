@@ -1,14 +1,47 @@
 // helpers/googleOAuthHelper.js
 import { google } from 'googleapis';
+import crypto from 'crypto';
 import CommonModel from '../../modules/models/mysql/commonModel/commonModel.js';
 import db from '../../config/knex.js';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
+const STATE_SECRET = process.env.SECRET_KEY;
 
 export class GoogleOAuthHelper {
-  
+
+  // The OAuth `state` round-trips through Google unauthenticated (the
+  // callback is a cross-site redirect, so our session cookie never arrives —
+  // see routes/V1/email-campaign.js). A plain base64 JSON state is just data
+  // the caller controls: anyone could request their own valid auth-url,
+  // complete consent with their own Google account, then hand-edit the
+  // `state` on the final redirect to point at a different senderId/staffId
+  // and hijack that sender's/staff member's connected account. HMAC-signing
+  // it means only a state this server itself issued (via getAuthUrl /
+  // getCalendarAuthUrl, both permission-gated) can pass verification.
+  static signState(payload) {
+    const json = JSON.stringify(payload);
+    const b64 = Buffer.from(json, 'utf-8').toString('base64url');
+    const sig = crypto.createHmac('sha256', STATE_SECRET).update(b64).digest('base64url');
+    return `${b64}.${sig}`;
+  }
+
+  static verifyState(state) {
+    const parts = String(state || '').split('.');
+    if (parts.length !== 2) return null;
+    const [b64, sig] = parts;
+    const expected = crypto.createHmac('sha256', STATE_SECRET).update(b64).digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    try {
+      return JSON.parse(Buffer.from(b64, 'base64url').toString('utf-8'));
+    } catch {
+      return null;
+    }
+  }
+
   static getOAuth2Client() {
     return new google.auth.OAuth2(
       GOOGLE_CLIENT_ID,
@@ -16,11 +49,11 @@ export class GoogleOAuthHelper {
       GOOGLE_REDIRECT_URI
     );
   }
-  
+
   static getAuthUrl(senderId) {
     const oauth2Client = this.getOAuth2Client();
-    const state = Buffer.from(JSON.stringify({ senderId })).toString('base64');
-    
+    const state = this.signState({ senderId });
+
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       // Scopes must match those registered on the Google OAuth consent screen.
@@ -55,24 +88,28 @@ export class GoogleOAuthHelper {
       token_type: tokens.token_type,
       scope: tokens.scope
     };
-    
+
     await CommonModel.updateData(
       'crm_sender_emails',
-      { 
+      {
         email_details: JSON.stringify(emailDetails),
         status: 'Active',
         updated_at: new Date()
       },
-      `id = ${senderId}`
+      `id = ?`,
+      null,
+      [senderId]
     );
   }
-  
+
   static async getValidAccessToken(senderId) {
     try {
       const sender = await CommonModel.getData(
         'crm_sender_emails',
         '*',
-        `id = ${senderId}`
+        `id = ?`,
+        '', '', '', '', null,
+        [senderId]
       );
       
       if (!sender || sender.length === 0) {
@@ -127,11 +164,13 @@ export class GoogleOAuthHelper {
           
           await CommonModel.updateData(
             'crm_sender_emails',
-            { 
+            {
               email_details: JSON.stringify(updatedEmailDetails),
               updated_at: new Date()
             },
-            `id = ${senderId}`
+            `id = ?`,
+            null,
+            [senderId]
           );
           
           console.log(`Token refreshed successfully for sender ${senderId}`);
@@ -150,12 +189,14 @@ export class GoogleOAuthHelper {
             
             await CommonModel.updateData(
               'crm_sender_emails',
-              { 
+              {
                 email_details: JSON.stringify(invalidatedDetails),
                 status: 'Inactive',
                 updated_at: new Date()
               },
-              `id = ${senderId}`
+              `id = ?`,
+              null,
+              [senderId]
             );
             
             throw new Error(`REAUTHENTICATION_REQUIRED: Please re-authenticate sender ${senderId}`);
@@ -226,7 +267,7 @@ export class GoogleOAuthHelper {
 
   static getCalendarAuthUrl(staffId) {
     const oauth2Client = this.getOAuth2Client();
-    const state = Buffer.from(JSON.stringify({ type: 'calendar', staffId })).toString('base64');
+    const state = this.signState({ type: 'calendar', staffId });
 
     return oauth2Client.generateAuthUrl({
       access_type: 'offline',
