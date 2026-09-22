@@ -9,18 +9,21 @@ export const getAllTemplates = async (req, res) => {
     try {
         const { status, template_name, email_subject } = req.query;
         let condition = "1=1";
-        
-        if (status === 'active') condition = "status = 'Active'";
-        if (status && status !== 'active') condition = `status = '${status}'`;
-        if (template_name) condition += ` AND template_name LIKE '%${template_name}%'`;
-        if (email_subject) condition += ` AND email_subject LIKE '%${email_subject}%'`;
+        const bindings = [];
+
+        if (status === 'active') condition += " AND status = 'Active'";
+        if (status && status !== 'active') { condition += " AND status = ?"; bindings.push(status); }
+        if (template_name) { condition += " AND template_name LIKE ?"; bindings.push(`%${template_name}%`); }
+        if (email_subject) { condition += " AND email_subject LIKE ?"; bindings.push(`%${email_subject}%`); }
 
         const templates = await CommonModel.getData(
             'crm_email_campaign_template',
             '*',
             condition,
             'id',
-            'desc'
+            'desc',
+            '', '', null,
+            bindings
         );
 
         res.status(200).json({
@@ -43,7 +46,9 @@ export const getTemplateById = async (req, res) => {
         const template = await CommonModel.getData(
             'crm_email_campaign_template',
             '*',
-            `id = ${templateId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [templateId]
         );
 
         if (!template || template.length === 0) {
@@ -96,7 +101,9 @@ export const createTemplate = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_email_campaign_template',
             'id',
-            `slug = '${slug}'`
+            `slug = ?`,
+            '', '', '', '', null,
+            [slug]
         );
 
         if (existing && existing.length > 0) {
@@ -153,7 +160,9 @@ export const updateTemplate = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_email_campaign_template',
             '*',
-            `id = ${templateId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [templateId]
         );
 
         if (!existing || existing.length === 0) {
@@ -170,7 +179,9 @@ export const updateTemplate = async (req, res) => {
             const slugExists = await CommonModel.getData(
                 'crm_email_campaign_template',
                 'id',
-                `slug = '${slug}' AND id != ${templateId}`
+                `slug = ? AND id != ?`,
+                '', '', '', '', null,
+                [slug, templateId]
             );
             if (slugExists && slugExists.length > 0) {
                 return res.status(400).json({
@@ -189,7 +200,9 @@ export const updateTemplate = async (req, res) => {
         const updated = await CommonModel.updateData(
             'crm_email_campaign_template',
             updateData,
-            `id = ${templateId}`
+            `id = ?`,
+            null,
+            [templateId]
         );
 
         if (!updated) {
@@ -202,7 +215,9 @@ export const updateTemplate = async (req, res) => {
         const updatedTemplate = await CommonModel.getData(
             'crm_email_campaign_template',
             '*',
-            `id = ${templateId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [templateId]
         );
 
         res.status(200).json({
@@ -226,7 +241,9 @@ export const deleteTemplate = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_email_campaign_template',
             '*',
-            `id = ${templateId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [templateId]
         );
 
         if (!existing || existing.length === 0) {
@@ -239,7 +256,9 @@ export const deleteTemplate = async (req, res) => {
         const campaignUsing = await CommonModel.getData(
             'crm_campaigns',
             'id',
-            `FIND_IN_SET(${templateId}, template_id)`
+            `FIND_IN_SET(?, template_id)`,
+            '', '', '', '', null,
+            [templateId]
         );
 
         if (campaignUsing && campaignUsing.length > 0) {
@@ -251,7 +270,9 @@ export const deleteTemplate = async (req, res) => {
 
         const deleted = await CommonModel.deleteRecord(
             'crm_email_campaign_template',
-            `id = ${templateId}`
+            `id = ?`,
+            null,
+            [templateId]
         );
 
         if (!deleted) {
@@ -280,18 +301,21 @@ export const getAllSenders = async (req, res) => {
     try {
         const { status, sender_name, email } = req.query;
         let condition = "1=1";
-        
-        if (status === 'active') condition = "status = 'Active'";
-        if (status && status !== 'active') condition = `status = '${status}'`;
-        if (sender_name) condition += ` AND sender_name LIKE '%${sender_name}%'`;
-        if (email) condition += ` AND email LIKE '%${email}%'`;
+        const bindings = [];
+
+        if (status === 'active') condition += " AND status = 'Active'";
+        if (status && status !== 'active') { condition += " AND status = ?"; bindings.push(status); }
+        if (sender_name) { condition += " AND sender_name LIKE ?"; bindings.push(`%${sender_name}%`); }
+        if (email) { condition += " AND email LIKE ?"; bindings.push(`%${email}%`); }
 
         const senders = await CommonModel.getData(
             'crm_sender_emails',
             '*',
             condition,
             'id',
-            'desc'
+            'desc',
+            '', '', null,
+            bindings
         );
 
         res.status(200).json({
@@ -314,7 +338,9 @@ export const getSenderById = async (req, res) => {
         const sender = await CommonModel.getData(
             'crm_sender_emails',
             '*',
-            `id = ${senderId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [senderId]
         );
 
         if (!sender || sender.length === 0) {
@@ -366,7 +392,9 @@ export const createSender = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_sender_emails',
             'id',
-            `email = '${email}'`
+            `email = ?`,
+            '', '', '', '', null,
+            [email]
         );
 
         if (existing && existing.length > 0) {
@@ -422,7 +450,9 @@ export const updateSender = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_sender_emails',
             '*',
-            `id = ${senderId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [senderId]
         );
 
         if (!existing || existing.length === 0) {
@@ -449,7 +479,9 @@ export const updateSender = async (req, res) => {
             const emailExists = await CommonModel.getData(
                 'crm_sender_emails',
                 'id',
-                `email = '${email}' AND id != ${senderId}`
+                `email = ? AND id != ?`,
+                '', '', '', '', null,
+                [email, senderId]
             );
             if (emailExists && emailExists.length > 0) {
                 return res.status(400).json({
@@ -467,7 +499,9 @@ export const updateSender = async (req, res) => {
         const updated = await CommonModel.updateData(
             'crm_sender_emails',
             updateData,
-            `id = ${senderId}`
+            `id = ?`,
+            null,
+            [senderId]
         );
 
         if (!updated) {
@@ -480,7 +514,9 @@ export const updateSender = async (req, res) => {
         const updatedSender = await CommonModel.getData(
             'crm_sender_emails',
             '*',
-            `id = ${senderId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [senderId]
         );
 
         res.status(200).json({
@@ -504,7 +540,9 @@ export const deleteSender = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_sender_emails',
             '*',
-            `id = ${senderId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [senderId]
         );
 
         if (!existing || existing.length === 0) {
@@ -517,7 +555,9 @@ export const deleteSender = async (req, res) => {
         const campaignUsing = await CommonModel.getData(
             'crm_campaigns',
             'id',
-            `FIND_IN_SET(${senderId}, sender_email_id)`
+            `FIND_IN_SET(?, sender_email_id)`,
+            '', '', '', '', null,
+            [senderId]
         );
 
         if (campaignUsing && campaignUsing.length > 0) {
@@ -529,7 +569,9 @@ export const deleteSender = async (req, res) => {
 
         const deleted = await CommonModel.deleteRecord(
             'crm_sender_emails',
-            `id = ${senderId}`
+            `id = ?`,
+            null,
+            [senderId]
         );
 
         if (!deleted) {
@@ -558,17 +600,20 @@ export const getAllMailingLists = async (req, res) => {
     try {
         const { status, name } = req.query;
         let condition = "1=1";
-        
-        if (status === 'active') condition = "status = 'Active'";
-        if (status && status !== 'active') condition = `status = '${status}'`;
-        if (name) condition += ` AND name LIKE '%${name}%'`;
+        const bindings = [];
+
+        if (status === 'active') condition += " AND status = 'Active'";
+        if (status && status !== 'active') { condition += " AND status = ?"; bindings.push(status); }
+        if (name) { condition += " AND name LIKE ?"; bindings.push(`%${name}%`); }
 
         const lists = await CommonModel.getData(
             'crm_mailing_list',
             '*',
             condition,
             'id',
-            'desc'
+            'desc',
+            '', '', null,
+            bindings
         );
 
         if (lists && lists.length) {
@@ -602,7 +647,9 @@ export const getMailingListById = async (req, res) => {
         const list = await CommonModel.getData(
             'crm_mailing_list',
             '*',
-            `id = ${listId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [listId]
         );
 
         if (!list || list.length === 0) {
@@ -615,7 +662,9 @@ export const getMailingListById = async (req, res) => {
         const emailCount = await CommonModel.getData(
             'crm_marketing_email_recipient',
             'COUNT(*) as total',
-            `mailing_list_id = ${listId}`
+            `mailing_list_id = ?`,
+            '', '', '', '', null,
+            [listId]
         );
         list[0].email_count = emailCount && emailCount[0] ? Number(emailCount[0].total) : 0;
 
@@ -646,7 +695,9 @@ export const createMailingList = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_mailing_list',
             'id',
-            `name = '${name}'`
+            `name = ?`,
+            '', '', '', '', null,
+            [name]
         );
 
         if (existing && existing.length > 0) {
@@ -702,7 +753,9 @@ export const updateMailingList = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_mailing_list',
             '*',
-            `id = ${listId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [listId]
         );
 
         if (!existing || existing.length === 0) {
@@ -721,7 +774,9 @@ export const updateMailingList = async (req, res) => {
             const nameExists = await CommonModel.getData(
                 'crm_mailing_list',
                 'id',
-                `name = '${name}' AND id != ${listId}`
+                `name = ? AND id != ?`,
+                '', '', '', '', null,
+                [name, listId]
             );
             if (nameExists && nameExists.length > 0) {
                 return res.status(400).json({
@@ -737,7 +792,9 @@ export const updateMailingList = async (req, res) => {
         const updated = await CommonModel.updateData(
             'crm_mailing_list',
             updateData,
-            `id = ${listId}`
+            `id = ?`,
+            null,
+            [listId]
         );
 
         if (!updated) {
@@ -750,7 +807,9 @@ export const updateMailingList = async (req, res) => {
         const updatedList = await CommonModel.getData(
             'crm_mailing_list',
             '*',
-            `id = ${listId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [listId]
         );
 
         res.status(200).json({
@@ -774,7 +833,9 @@ export const deleteMailingList = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_mailing_list',
             '*',
-            `id = ${listId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [listId]
         );
 
         if (!existing || existing.length === 0) {
@@ -787,7 +848,9 @@ export const deleteMailingList = async (req, res) => {
         const campaignUsing = await CommonModel.getData(
             'crm_campaign_mailing_lists',
             'id',
-            `mailing_list_id = ${listId}`
+            `mailing_list_id = ?`,
+            '', '', '', '', null,
+            [listId]
         );
 
         if (campaignUsing && campaignUsing.length > 0) {
@@ -799,12 +862,16 @@ export const deleteMailingList = async (req, res) => {
 
         await CommonModel.deleteRecord(
             'crm_marketing_email_recipient',
-            `mailing_list_id = ${listId}`
+            `mailing_list_id = ?`,
+            null,
+            [listId]
         );
 
         const deleted = await CommonModel.deleteRecord(
             'crm_mailing_list',
-            `id = ${listId}`
+            `id = ?`,
+            null,
+            [listId]
         );
 
         if (!deleted) {
@@ -833,16 +900,20 @@ export const getRecipientsByList = async (req, res) => {
     try {
         const { listId } = req.params;
         const { name, email, mail_status } = req.query;
-        
-        let condition = `mailing_list_id = ${listId}`;
+
+        let condition = `mailing_list_id = ?`;
+        const bindings = [listId];
         if (name && name.trim()) {
-            condition += ` AND (name LIKE '%${name}%' OR last_name LIKE '%${name}%')`;
+            condition += ` AND (name LIKE ? OR last_name LIKE ?)`;
+            bindings.push(`%${name}%`, `%${name}%`);
         }
         if (email && email.trim()) {
-            condition += ` AND email LIKE '%${email}%'`;
+            condition += ` AND email LIKE ?`;
+            bindings.push(`%${email}%`);
         }
         if (mail_status && mail_status.trim()) {
-            condition += ` AND mail_status = '${mail_status}'`;
+            condition += ` AND mail_status = ?`;
+            bindings.push(mail_status);
         }
 
         const recipients = await CommonModel.getData(
@@ -850,7 +921,9 @@ export const getRecipientsByList = async (req, res) => {
             '*',
             condition,
             'id',
-            'desc'
+            'desc',
+            '', '', null,
+            bindings
         );
 
         res.status(200).json({
@@ -890,7 +963,9 @@ export const addRecipient = async (req, res) => {
         const existingInList = await CommonModel.getData(
             'crm_marketing_email_recipient',
             'id',
-            `email = '${email}' AND mailing_list_id = ${listId}`
+            `email = ? AND mailing_list_id = ?`,
+            '', '', '', '', null,
+            [email, listId]
         );
 
         if (existingInList && existingInList.length > 0) {
@@ -961,7 +1036,9 @@ export const updateRecipient = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_marketing_email_recipient',
             '*',
-            `id = ${recipientId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [recipientId]
         );
 
         if (!existing || existing.length === 0) {
@@ -988,7 +1065,9 @@ export const updateRecipient = async (req, res) => {
             const emailExists = await CommonModel.getData(
                 'crm_marketing_email_recipient',
                 'id',
-                `email = '${email}' AND id != ${recipientId}`
+                `email = ? AND id != ?`,
+                '', '', '', '', null,
+                [email, recipientId]
             );
             if (emailExists && emailExists.length > 0) {
                 return res.status(400).json({
@@ -1002,7 +1081,9 @@ export const updateRecipient = async (req, res) => {
         const updated = await CommonModel.updateData(
             'crm_marketing_email_recipient',
             updateData,
-            `id = ${recipientId}`
+            `id = ?`,
+            null,
+            [recipientId]
         );
 
         if (!updated) {
@@ -1015,7 +1096,9 @@ export const updateRecipient = async (req, res) => {
         const updatedRecipient = await CommonModel.getData(
             'crm_marketing_email_recipient',
             '*',
-            `id = ${recipientId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [recipientId]
         );
 
         res.status(200).json({
@@ -1055,6 +1138,8 @@ export const deleteRecipients = async (req, res) => {
             });
         }
 
+        idArray = idArray.map((id) => Number(id)).filter((id) => Number.isInteger(id));
+
         if (idArray.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -1062,8 +1147,8 @@ export const deleteRecipients = async (req, res) => {
             });
         }
 
-        const condition = `id IN (${idArray.join(',')})`;
-        const deleted = await CommonModel.deleteRecord('crm_marketing_email_recipient', condition);
+        const condition = `id IN (${idArray.map(() => '?').join(',')})`;
+        const deleted = await CommonModel.deleteRecord('crm_marketing_email_recipient', condition, null, idArray);
 
         res.status(200).json({
             success: true,
@@ -1137,7 +1222,9 @@ export const importCSV = async (req, res) => {
             const existing = await CommonModel.getData(
                 'crm_marketing_email_recipient',
                 'id',
-                `email = '${email}' AND mailing_list_id = ${list_id}`
+                `email = ? AND mailing_list_id = ?`,
+                '', '', '', '', null,
+                [email, list_id]
             );
             
             if (existing && existing.length > 0) {
@@ -1288,22 +1375,25 @@ export const getAllCampaigns = async (req, res) => {
     try {
         const { name, status } = req.query;
         let condition = "1=1";
-        
-        if (name) condition += ` AND name LIKE '%${name}%'`;
-        if (status) condition += ` AND status = '${status}'`;
+        const bindings = [];
+
+        if (name) { condition += " AND name LIKE ?"; bindings.push(`%${name}%`); }
+        if (status) { condition += " AND status = ?"; bindings.push(status); }
 
         const campaigns = await CommonModel.getData(
             'crm_campaigns',
             '*',
             condition,
             'id',
-            'desc'
+            'desc',
+            '', '', null,
+            bindings
         );
 
         if (campaigns && campaigns.length) {
             for (let campaign of campaigns) {
-                const senderIds = campaign.sender_email_id?.split(',') || [];
-                if (senderIds.length && senderIds[0]) {
+                const senderIds = (campaign.sender_email_id?.split(',') || []).map(Number).filter(Number.isInteger);
+                if (senderIds.length) {
                     const senders = await CommonModel.getData(
                         'crm_sender_emails',
                         'email',
@@ -1314,8 +1404,8 @@ export const getAllCampaigns = async (req, res) => {
                     campaign.sender_emails = '';
                 }
 
-                const templateIds = campaign.template_id?.split(',') || [];
-                if (templateIds.length && templateIds[0]) {
+                const templateIds = (campaign.template_id?.split(',') || []).map(Number).filter(Number.isInteger);
+                if (templateIds.length) {
                     const templates = await CommonModel.getData(
                         'crm_email_campaign_template',
                         'template_name',
@@ -1357,7 +1447,9 @@ export const getCampaignById = async (req, res) => {
         const campaign = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            `id = ${campaignId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
 
         if (!campaign || campaign.length === 0) {
@@ -1370,7 +1462,9 @@ export const getCampaignById = async (req, res) => {
         const mailingLists = await CommonModel.getData(
             'crm_campaign_mailing_lists',
             '*',
-            `campaign_id = ${campaignId}`
+            `campaign_id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
 
         const campaignData = campaign[0];
@@ -1379,10 +1473,11 @@ export const getCampaignById = async (req, res) => {
         campaignData.mail_template_ids = campaignData.template_id?.split(',') || [];
 
         // Get mailing list names
+        const safeMailListIds = campaignData.mail_list_ids.map(Number).filter(Number.isInteger);
         const mailingListNames = await CommonModel.getData(
             'crm_mailing_list',
             'name',
-            `id IN (${campaignData.mail_list_ids.join(',') || 0})`
+            `id IN (${safeMailListIds.length ? safeMailListIds.join(',') : '0'})`
         );
         campaignData.mailing_list_names = mailingListNames?.map(ml => ml.name) || [];
 
@@ -1458,7 +1553,9 @@ export const createCampaign = async (req, res) => {
             const emailCount = await CommonModel.getData(
                 'crm_marketing_email_recipient',
                 'COUNT(*) as total',
-                `mailing_list_id = ${listId}`
+                `mailing_list_id = ?`,
+                '', '', '', '', null,
+                [listId]
             );
 
             await CommonModel.insertData('crm_campaign_mailing_lists', {
@@ -1498,7 +1595,9 @@ export const updateCampaign = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            `id = ${campaignId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
 
         if (!existing || existing.length === 0) {
@@ -1526,7 +1625,9 @@ export const updateCampaign = async (req, res) => {
         const updated = await CommonModel.updateData(
             'crm_campaigns',
             updateData,
-            `id = ${campaignId}`
+            `id = ?`,
+            null,
+            [campaignId]
         );
 
         if (!updated) {
@@ -1539,7 +1640,9 @@ export const updateCampaign = async (req, res) => {
         if (mail_list && mail_list.length) {
             await CommonModel.deleteRecord(
                 'crm_campaign_mailing_lists',
-                `campaign_id = ${campaignId}`
+                `campaign_id = ?`,
+                null,
+                [campaignId]
             );
 
             const mailingListIds = Array.isArray(mail_list) ? mail_list : [mail_list];
@@ -1547,7 +1650,9 @@ export const updateCampaign = async (req, res) => {
                 const emailCount = await CommonModel.getData(
                     'crm_marketing_email_recipient',
                     'COUNT(*) as total',
-                    `mailing_list_id = ${listId}`
+                    `mailing_list_id = ?`,
+                    '', '', '', '', null,
+                    [listId]
                 );
 
                 await CommonModel.insertData('crm_campaign_mailing_lists', {
@@ -1563,7 +1668,9 @@ export const updateCampaign = async (req, res) => {
         const updatedCampaign = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            `id = ${campaignId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
 
         res.status(200).json({
@@ -1587,7 +1694,9 @@ export const deleteCampaign = async (req, res) => {
         const existing = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            `id = ${campaignId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
 
         if (!existing || existing.length === 0) {
@@ -1599,12 +1708,16 @@ export const deleteCampaign = async (req, res) => {
 
         await CommonModel.deleteRecord(
             'crm_campaign_mailing_lists',
-            `campaign_id = ${campaignId}`
+            `campaign_id = ?`,
+            null,
+            [campaignId]
         );
 
         const deleted = await CommonModel.deleteRecord(
             'crm_campaigns',
-            `id = ${campaignId}`
+            `id = ?`,
+            null,
+            [campaignId]
         );
 
         if (!deleted) {
@@ -1638,7 +1751,7 @@ export const getCampaignMailingLists = async (req, res) => {
             [
                 ["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]
             ],
-            `cml.campaign_id = ${campaignId}`,
+            { sql: `cml.campaign_id = ?`, bindings: [campaignId] },
             { "cml.id": "asc" }
         );
 
@@ -1674,51 +1787,59 @@ export const getCampaignLogs = async (req, res) => {
             date_to 
         } = req.query;
 
-        let condition = "1=1";
-        
         // Build conditions for join query (using table aliases)
         let joinCondition = "1=1";
-        
+        const joinBindings = [];
+
         if (campaignId) {
-            joinCondition += ` AND l.campaign_id = ${campaignId}`;
+            joinCondition += ` AND l.campaign_id = ?`;
+            joinBindings.push(campaignId);
         }
         if (campaign_name && campaign_name.trim()) {
-            joinCondition += ` AND c.name LIKE '%${campaign_name}%'`;
+            joinCondition += ` AND c.name LIKE ?`;
+            joinBindings.push(`%${campaign_name}%`);
         }
         if (recipient_email && recipient_email.trim()) {
-            joinCondition += ` AND (l.recipient_email LIKE '%${recipient_email}%' OR r.email LIKE '%${recipient_email}%')`;
+            joinCondition += ` AND (l.recipient_email LIKE ? OR r.email LIKE ?)`;
+            joinBindings.push(`%${recipient_email}%`, `%${recipient_email}%`);
         }
         if (status && status.trim()) {
-            joinCondition += ` AND l.status = '${status}'`;
+            joinCondition += ` AND l.status = ?`;
+            joinBindings.push(status);
         }
         if (date_from && date_from.trim()) {
-            joinCondition += ` AND DATE(l.sent_at) >= '${date_from}'`;
+            joinCondition += ` AND DATE(l.sent_at) >= ?`;
+            joinBindings.push(date_from);
         }
         if (date_to && date_to.trim()) {
-            joinCondition += ` AND DATE(l.sent_at) <= '${date_to}'`;
+            joinCondition += ` AND DATE(l.sent_at) <= ?`;
+            joinBindings.push(date_to);
         }
 
         // For total count query (no table alias)
         let countCondition = "1=1";
-        
+        const countBindings = [];
+
         if (campaignId) {
-            countCondition += ` AND campaign_id = ${campaignId}`;
+            countCondition += ` AND campaign_id = ?`;
+            countBindings.push(campaignId);
         }
         if (status && status.trim()) {
-            countCondition += ` AND status = '${status}'`;
+            countCondition += ` AND status = ?`;
+            countBindings.push(status);
         }
         if (date_from && date_from.trim()) {
-            countCondition += ` AND DATE(sent_at) >= '${date_from}'`;
+            countCondition += ` AND DATE(sent_at) >= ?`;
+            countBindings.push(date_from);
         }
         if (date_to && date_to.trim()) {
-            countCondition += ` AND DATE(sent_at) <= '${date_to}'`;
+            countCondition += ` AND DATE(sent_at) <= ?`;
+            countBindings.push(date_to);
         }
         if (recipient_email && recipient_email.trim()) {
-            countCondition += ` AND recipient_email LIKE '%${recipient_email}%'`;
+            countCondition += ` AND recipient_email LIKE ?`;
+            countBindings.push(`%${recipient_email}%`);
         }
-
-        // console.log("Join Condition:", joinCondition);
-        // console.log("Count Condition:", countCondition);
 
         if (page && limit) {
             const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -1731,7 +1852,7 @@ export const getCampaignLogs = async (req, res) => {
                     ["LEFT", "crm_campaigns as c", "l.campaign_id = c.id"],
                     ["LEFT", "crm_marketing_email_recipient as r", "l.recipient_id = r.id"]
                 ],
-                joinCondition,
+                { sql: joinCondition, bindings: joinBindings },
                 { "l.id": "desc" },
                 "",
                 { offset, rows: parseInt(limit) }
@@ -1739,9 +1860,11 @@ export const getCampaignLogs = async (req, res) => {
 
             // Use countCondition without table alias
             const totalResult = await CommonModel.getData(
-                'crm_campaign_email_logs', 
-                'COUNT(*) as total', 
-                countCondition
+                'crm_campaign_email_logs',
+                'COUNT(*) as total',
+                countCondition,
+                '', '', '', '', null,
+                countBindings
             );
 
             res.status(200).json({
@@ -1763,7 +1886,7 @@ export const getCampaignLogs = async (req, res) => {
                     ["LEFT", "crm_campaigns as c", "l.campaign_id = c.id"],
                     ["LEFT", "crm_marketing_email_recipient as r", "l.recipient_id = r.id"]
                 ],
-                joinCondition,
+                { sql: joinCondition, bindings: joinBindings },
                 { "l.id": "desc" }
             );
 
@@ -1898,7 +2021,16 @@ export const gmailCallback = async (req, res) => {
         }
 
         if (state) {
-            stateData = JSON.parse(Buffer.from(state, 'base64').toString());
+            // Signed by GoogleOAuthHelper.signState() when the auth-url was
+            // issued — this route can't require a login (Google's redirect
+            // back here is cross-site, so the session cookie never arrives),
+            // so the signature is what stops someone from completing their
+            // own Google consent and then hand-editing `state` to hijack a
+            // different sender's/staff member's connected account.
+            stateData = GoogleOAuthHelper.verifyState(state) || {};
+            if (!Object.keys(stateData).length) {
+                throw new Error('Invalid or tampered OAuth state');
+            }
         }
 
         // Google only allows one registered redirect URI per client, so both
@@ -1951,22 +2083,26 @@ export const previewCampaign = async (req, res) => {
         const campaign = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            `id = ${campaignId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
-        
+
         if (!campaign || campaign.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: "Campaign not found"
             });
         }
-        
+
         // Get template
         const templateId = campaign[0].template_id.split(',')[0];
         const template = await CommonModel.getData(
             'crm_email_campaign_template',
             '*',
-            `id = ${templateId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [templateId]
         );
         
         if (!template || template.length === 0) {
@@ -1990,7 +2126,7 @@ export const previewCampaign = async (req, res) => {
         const campaignLists = await CommonModel.joinFetch(
             ["crm_campaign_mailing_lists as cml", ["cml.*", "ml.name as list_name", "ml.status as list_status"]],
             [["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]],
-            `cml.campaign_id = ${campaignId}`
+            { sql: `cml.campaign_id = ?`, bindings: [campaignId] }
         );
         
         // Get recipient counts per list
@@ -2050,7 +2186,9 @@ export const sendDemoEmail = async (req, res) => {
             const templateData = await CommonModel.getData(
                 'crm_email_campaign_template',
                 '*',
-                `id = ${template_id}`
+                `id = ?`,
+                '', '', '', '', null,
+                [template_id]
             );
             template = templateData?.[0];
         } else {
@@ -2058,7 +2196,9 @@ export const sendDemoEmail = async (req, res) => {
             const campaign = await CommonModel.getData(
                 'crm_campaigns',
                 '*',
-                `id = ${campaignId}`
+                `id = ?`,
+                '', '', '', '', null,
+                [campaignId]
             );
             if (campaign && campaign.length) {
                 const templateId = campaign[0].template_id?.split(',')[0];
@@ -2066,7 +2206,9 @@ export const sendDemoEmail = async (req, res) => {
                     const templateData = await CommonModel.getData(
                         'crm_email_campaign_template',
                         '*',
-                        `id = ${templateId}`
+                        `id = ?`,
+                        '', '', '', '', null,
+                        [templateId]
                     );
                     template = templateData?.[0];
                 }
@@ -2086,7 +2228,9 @@ export const sendDemoEmail = async (req, res) => {
             const campaign = await CommonModel.getData(
                 'crm_campaigns',
                 '*',
-                `id = ${campaignId}`
+                `id = ?`,
+                '', '', '', '', null,
+                [campaignId]
             );
             if (campaign && campaign.length) {
                 senderId = campaign[0].sender_email_id?.split(',')[0];
@@ -2149,28 +2293,32 @@ export const getCampaignPreview = async (req, res) => {
         const campaign = await CommonModel.getData(
             'crm_campaigns',
             '*',
-            `id = ${campaignId}`
+            `id = ?`,
+            '', '', '', '', null,
+            [campaignId]
         );
-        
+
         if (!campaign || campaign.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: "Campaign not found"
             });
         }
-        
+
         // Get template
-        const templateId = campaign[0].template_id?.split(',')[0];    
+        const templateId = campaign[0].template_id?.split(',')[0];
         let template = null;
         if (templateId) {
             const templateData = await CommonModel.getData(
                 'crm_email_campaign_template',
                 '*',
-                `id = ${templateId}`
+                `id = ?`,
+                '', '', '', '', null,
+                [templateId]
             );
             template = templateData?.[0];
         }
-        
+
         // Get sender
         const senderId = campaign[0].sender_email_id?.split(',')[0];
         let sender = null;
@@ -2178,7 +2326,9 @@ export const getCampaignPreview = async (req, res) => {
             const senderData = await CommonModel.getData(
                 'crm_sender_emails',
                 '*',
-                `id = ${senderId}`
+                `id = ?`,
+                '', '', '', '', null,
+                [senderId]
             );
             sender = senderData?.[0];
         }
@@ -2187,7 +2337,7 @@ export const getCampaignPreview = async (req, res) => {
         const campaignLists = await CommonModel.joinFetch(
             ["crm_campaign_mailing_lists as cml", ["cml.*", "ml.name as list_name", "ml.status as list_status"]],
             [["LEFT", "crm_mailing_list as ml", "cml.mailing_list_id = ml.id"]],
-            `cml.campaign_id = ${campaignId}`
+            { sql: `cml.campaign_id = ?`, bindings: [campaignId] }
         );
         
         // ✅ Get ALL recipients for each list (no limit)
