@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 import { parse } from 'json2csv';
 import db from '../../../config/knex.js';
 import OCRService from '../../../services/ocrService.js';
@@ -24,6 +25,8 @@ const TABLES = {
     USERS: 'ups_users',
     CRM_USERS: 'crm_users',
     SAVED_FILTERS: 'crm_lead_saved_filters',
+    COUNTRIES: 'ups_countries',
+    CLIENTS: 'crm_clients',
 };
 
 // Leads that are lost/junk/deleted don't show up in the pipeline (table,
@@ -116,12 +119,14 @@ const leadSelectColumns = [
     'src.name as source_name',
     'u.first_name as assigned_firstname',
     'u.last_name as assigned_lastname',
+    'co.name as country_name',
 ];
 
 const withLeadJoins = (qb) => qb
     .leftJoin(`${TABLES.STATUS} as s`, 's.id', 'l.status')
     .leftJoin(`${TABLES.SOURCE} as src`, 'src.id', 'l.source')
-    .leftJoin(`${TABLES.USERS} as u`, 'u.id', 'l.assigned');
+    .leftJoin(`${TABLES.USERS} as u`, 'u.id', 'l.assigned')
+    .leftJoin(`${TABLES.COUNTRIES} as co`, 'co.id', 'l.country');
 
 // ==================== LEAD STATUS CRUD ====================
 
@@ -1420,6 +1425,10 @@ export const convertLeadToCustomer = async (req, res) => {
         const existing = await db(TABLES.LEADS).where('id', id).first();
         if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
 
+        if (existing.date_converted) {
+            return res.status(409).json({ success: false, message: "This lead has already been converted to a customer." });
+        }
+
         const customerStatus = await db(TABLES.STATUS).where('isdefault', true).first();
 
         await db(TABLES.LEADS).where('id', id).update({
@@ -1429,6 +1438,124 @@ export const convertLeadToCustomer = async (req, res) => {
         });
 
         await logActivity(id, 'Lead converted to customer', req);
+        res.status(200).json({ success: true, message: "Lead converted to customer successfully" });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// A lead's logo isn't uploaded until the "Convert to Customer" off-canvas is
+// open, so it can't ride along with the rest of that form's JSON body —
+// it needs its own multipart upload, same as lead attachments.
+export const uploadCompanyLogo = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+        const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}-${req.file.originalname}`;
+        const blobUrl = await uploadToAzureBlob(uniqueName, req.file.buffer, req.file.mimetype, 'crm/company_logos');
+        if (!blobUrl) return res.status(502).json({ success: false, message: "Failed to upload file to storage" });
+
+        res.status(201).json({ success: true, data: { company_logo: blobUrl, image_name: req.file.originalname } });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// Converts a lead into a real Company record over in skillsconnect-node (the
+// "Convert to Customer" off-canvas collects the same fields as that app's own
+// Company add/edit form). This is a service-to-service call — skillsconnect-node
+// authenticates it via CRM_INTERNAL_API_KEY rather than a user session, since
+// CRM staff don't have a session there. On success the lead itself is marked
+// converted the same way convertLeadToCustomer() does.
+export const convertLeadToCompany = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const existing = await db(TABLES.LEADS).where('id', id).first();
+        if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
+
+        // A converted lead's email/mobile already live on the ups_users row
+        // that got created for its executive — resubmitting hits that unique
+        // constraint and fails with a confusing DB error. Block it up front.
+        if (existing.date_converted) {
+            return res.status(409).json({ success: false, message: "This lead has already been converted to a customer." });
+        }
+
+        const NODE_BACKEND_URL = process.env.SKILLSCONNECT_NODE_URL;
+        const CRM_INTERNAL_API_KEY = process.env.CRM_INTERNAL_API_KEY;
+        if (!NODE_BACKEND_URL || !CRM_INTERNAL_API_KEY) {
+            return res.status(500).json({ success: false, message: "SKILLSCONNECT_NODE_URL / CRM_INTERNAL_API_KEY not configured" });
+        }
+
+        const {
+            company_name, client_type, executive_name, email, mobile, website,
+            company_profile, company_address, company_logo, image_name,
+            country_id, state_id, city_id, pincode, status,
+        } = req.body;
+
+        let companyRes;
+        try {
+            companyRes = await axios.post(
+                `${NODE_BACKEND_URL}/website/companies/add`,
+                {
+                    company_name, client_type, executive_name, email, mobile, website,
+                    company_profile, company_address, company_logo, image_name,
+                    country_id, state_id, city_id, pincode, status,
+                },
+                { headers: { 'x-internal-api-key': CRM_INTERNAL_API_KEY } },
+            );
+        } catch (proxyError) {
+            const backend = proxyError?.response?.data;
+            return res.status(proxyError?.response?.status || 502).json({
+                success: false,
+                message: backend?.msg || 'Failed to create company in SkillsConnect',
+                errors: backend?.errors,
+            });
+        }
+
+        if (!companyRes?.data?.status) {
+            return res.status(502).json({ success: false, message: companyRes?.data?.msg || 'Failed to create company in SkillsConnect' });
+        }
+
+        const customerStatus = await db(TABLES.STATUS).where('isdefault', true).first();
+        await db(TABLES.LEADS).where('id', id).update({
+            status: customerStatus?.id || existing.status,
+            date_converted: new Date(),
+            updated_by: currentUserId(req),
+        });
+
+        // Also mirror this into the CRM's own clients table (crm_clients) so
+        // the new customer shows up under CRM -> Clients for proposals/invoices,
+        // not just as a Company over in skillsconnect-node. Idempotent on
+        // lead_id in case this is retried after a partial failure.
+        try {
+            const existingClient = await db(TABLES.CLIENTS).where('lead_id', id).first();
+            if (!existingClient) {
+                const location = await resolveLocation({ country: country_id, state: state_id, city: city_id });
+                await db(TABLES.CLIENTS).insert({
+                    company: company_name,
+                    phone: mobile || null,
+                    email: email || null,
+                    website: website || null,
+                    address: company_address || null,
+                    city: location.city,
+                    state: location.state,
+                    country: location.country,
+                    zip: pincode || null,
+                    notes: company_profile || null,
+                    lead_id: id,
+                    created_by: currentUserId(req),
+                    updated_by: currentUserId(req),
+                });
+            }
+        } catch (clientSyncError) {
+            // The Company (the real record) already exists at this point — don't
+            // fail the whole conversion over the CRM-local mirror row.
+            console.error('Failed to sync crm_clients after lead conversion:', clientSyncError?.message || clientSyncError);
+        }
+
+        await logActivity(id, `Lead converted to customer — company "${company_name}" created`, req);
         res.status(200).json({ success: true, message: "Lead converted to customer successfully" });
     } catch (error) {
         console.error('Error:', error);

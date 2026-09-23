@@ -42,6 +42,8 @@ import {
     markLeadJunk,
     unmarkLeadJunk,
     convertLeadToCustomer,
+    uploadCompanyLogo,
+    convertLeadToCompany,
     simulateLeadsImportCSV,
     importLeadsCSV,
     exportLeadsCSV,
@@ -132,6 +134,15 @@ const uploadAudioNote = multer({
     },
 });
 
+const uploadCompanyLogoFile = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if ((file.mimetype || '').startsWith('image/')) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
+    },
+});
+
 // ==================== LEAD FORM DATA ====================
 router.get('/form-data', view, getLeadFormData);
 
@@ -208,6 +219,8 @@ router.patch('/:id/unlost', edit, ownLead, unmarkLeadLost);
 router.patch('/:id/junk', edit, ownLead, markLeadJunk);
 router.patch('/:id/unjunk', edit, ownLead, unmarkLeadJunk);
 router.post('/:id/convert', edit, ownLead, convertLeadToCustomer);
+router.post('/:id/convert-to-company', edit, ownLead, convertLeadToCompany);
+router.post('/company-logo', edit, uploadCompanyLogoFile.single('file'), uploadCompanyLogo);
 router.post('/:id/tags', edit, ownLead, assignLeadTags);
 
 // ==================== LEAD ATTACHMENTS ====================
