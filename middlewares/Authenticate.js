@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { checkCrmAccess, isCrmAdmin } from "../helpers/V1/crmAccess.js";
 
 const { default: commonModel } = await import(
   `../modules/models/mysql/commonModel/commonModel.js`
@@ -71,17 +72,22 @@ const authenticate = (opts = {}) => async (req, res, next) => {
 
       const user = userResult[0];
 
-      // CRM-specific: is_admin bypasses all crm_staff_permissions checks
-      // (see middlewares/requirePermission.js). Not every ups_users account
-      // is CRM staff, so a missing row just means "no CRM access flags" —
-      // routes that need CRM access still gate on crm_staff_permissions.
+      // CRM access is re-checked on every request (not just at login) so that
+      // removing a crm_users row, deactivating the account or changing its
+      // user_type in SkillsConnect cuts off an already-issued token at once.
+      // is_admin bypasses all crm_staff_permissions checks
+      // (see middlewares/requirePermission.js).
       const crmUserResult = await commonModel.getData(
         "crm_users",
         "is_admin, role_id, department, designation",
         `user_id = ${user.id}`
       );
       const crmUser = crmUserResult ? crmUserResult[0] : null;
-      user.is_admin = Boolean(crmUser?.is_admin);
+      const access = checkCrmAccess(user, crmUser);
+      if (!access.ok) {
+        return res.status(403).json({ error: access.msg, requireLogin: true });
+      }
+      user.is_admin = isCrmAdmin(user, crmUser);
       user.crm_role_id = crmUser?.role_id ?? null;
       user.department = crmUser?.department ?? null;
       user.designation = crmUser?.designation ?? null;

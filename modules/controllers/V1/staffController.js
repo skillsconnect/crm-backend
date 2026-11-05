@@ -1,7 +1,17 @@
 import db from '../../../config/knex.js';
 import { CRM_FEATURES, CRM_CAPABILITIES, isValidFeature, isValidCapability } from '../../../helpers/V1/crmPermissions.catalog.js';
+import { isCrmAdmin, isPlatformSuperadmin } from '../../../helpers/V1/crmAccess.js';
 
 const currentUserId = (req) => req.user?.id || 1;
+
+// Effective admin flag (SkillsConnect superadmins are always CRM admins) plus
+// `admin_locked` so the UI can disable the revoke button for them. user_type
+// is dropped from the response — the UI only needs the derived flags.
+const withEffectiveAdmin = ({ user_type, ...s }) => ({
+    ...s,
+    is_admin: isCrmAdmin({ user_type }, s),
+    admin_locked: isPlatformSuperadmin({ user_type }),
+});
 
 // ==================== STAFF LIST ====================
 // The Staff page — every ups_users account that has been onboarded as CRM
@@ -16,7 +26,7 @@ export const getAllStaff = async (req, res) => {
             .leftJoin('crm_roles as r', 'r.id', 'cu.role_id')
             .select(
                 'cu.id as crm_user_id', 'u.id as user_id', 'u.first_name', 'u.last_name', 'u.email',
-                'u.mobile', 'u.status', 'cu.is_admin', 'cu.department', 'cu.designation',
+                'u.mobile', 'u.status', 'u.user_type', 'cu.is_admin', 'cu.department', 'cu.designation',
                 'cu.role_id', 'r.name as role_name', 'cu.created_on'
             );
 
@@ -37,7 +47,7 @@ export const getAllStaff = async (req, res) => {
             .groupBy('staff_id');
         const countByStaff = new Map(permissionCounts.map((p) => [p.staff_id, Number(p.total)]));
 
-        const data = staff.map((s) => ({
+        const data = staff.map(withEffectiveAdmin).map((s) => ({
             ...s,
             full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim(),
             permission_count: countByStaff.get(s.user_id) || 0,
@@ -59,10 +69,11 @@ export const getStaffById = async (req, res) => {
             .leftJoin('crm_roles as r', 'r.id', 'cu.role_id')
             .select(
                 'cu.id as crm_user_id', 'u.id as user_id', 'u.first_name', 'u.last_name', 'u.email',
-                'u.mobile', 'u.status', 'cu.is_admin', 'cu.department', 'cu.designation', 'cu.role_id', 'r.name as role_name'
+                'u.mobile', 'u.status', 'u.user_type', 'cu.is_admin', 'cu.department', 'cu.designation', 'cu.role_id', 'r.name as role_name'
             )
             .where('u.id', id)
-            .first();
+            .first()
+            .then((row) => (row ? withEffectiveAdmin(row) : row));
 
         if (!staff) return res.status(404).json({ success: false, message: "Staff member not found" });
 
@@ -96,6 +107,13 @@ export const setStaffAdmin = async (req, res) => {
 
         const existing = await db('crm_users').where('user_id', id).first();
         if (!existing) return res.status(404).json({ success: false, message: "Staff member not found" });
+
+        if (!is_admin) {
+            const target = await db('ups_users').where('id', id).first('user_type');
+            if (isPlatformSuperadmin(target)) {
+                return res.status(400).json({ success: false, message: "SkillsConnect superadmins always have CRM admin access" });
+            }
+        }
 
         await db('crm_users').where('user_id', id).update({ is_admin: Boolean(is_admin), updated_by: currentUserId(req) });
         res.status(200).json({ success: true, message: `Admin access ${is_admin ? 'granted' : 'revoked'}` });

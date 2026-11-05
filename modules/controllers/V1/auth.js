@@ -1,14 +1,12 @@
 import db from '../../../config/knex.js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { checkCrmAccess, isCrmAdmin } from '../../../helpers/V1/crmAccess.js';
 
 const keySecret = process.env.SECRET_KEY;
 const refreshSecret = process.env.REFRESH_TOKEN_SECRET || keySecret;
 const ACCESS_TOKEN_TTL_DAYS = parseInt(process.env.ACCESS_TOKEN_TTL_DAYS || '2', 10);
 const REFRESH_TOKEN_TTL_DAYS = parseInt(process.env.REFRESH_TOKEN_TTL_DAYS || '7', 10);
-
-// user_type 23 = CRM Staff (see skillsconnect-node ups_roles id 23)
-const CRM_STAFF_USER_TYPE = 23;
 
 const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
 
@@ -16,7 +14,8 @@ const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
  * POST /crm/auth/login
  * Accepts either { email, password } (direct login) or { logintoken } (SSO
  * handoff from skillsconnect-react, minted via POST /website/auth/crm-sso-token).
- * Only user_type=23 (CRM Staff) accounts may authenticate here.
+ * Only onboarded CRM users may authenticate here — see helpers/V1/crmAccess.js
+ * (user_type 1/2/3/23 with a crm_users row and an Active account).
  */
 export const login = async (req, res) => {
   try {
@@ -35,13 +34,16 @@ export const login = async (req, res) => {
         .andWhere('expires_at', '>', db.fn.now())
         .first();
 
-      if (!tokenRow) {
+      // The JWT is only decoded (not verified), so its claims are not trusted on
+      // their own: the user comes from the server-side token row, and the
+      // claimed id must agree with it.
+      if (!tokenRow || Number(tokenRow.user_id) !== Number(decoded.id)) {
         return res.status(400).json({ status: false, msg: 'Login token is expired or revoked.' });
       }
 
       user = await db('ups_users as u')
         .select('u.id', 'u.email', 'u.full_name', 'u.first_name', 'u.last_name', 'u.status', 'u.user_type')
-        .where({ 'u.id': decoded.id, 'u.is_deleted': 'No' })
+        .where({ 'u.id': tokenRow.user_id, 'u.is_deleted': 'No' })
         .first();
     } else {
       if (!email || !password) {
@@ -58,15 +60,12 @@ export const login = async (req, res) => {
       return res.status(401).json({ status: false, msg: 'Entered email or password is incorrect.' });
     }
 
-    if (Number(user.user_type) !== CRM_STAFF_USER_TYPE) {
-      return res.status(403).json({ status: false, msg: 'This account is not a CRM account.' });
-    }
-
-    if (['Blocked', 'Disabled'].includes(user.status)) {
-      return res.status(403).json({ status: false, msg: 'This account has been disabled. Contact your administrator.' });
-    }
-
     const crmProfile = await db('crm_users').where({ user_id: user.id }).first();
+    const access = checkCrmAccess(user, crmProfile);
+    if (!access.ok) {
+      return res.status(403).json({ status: false, msg: access.msg });
+    }
+
     const permissionRows = await db('crm_permissions').where({ user_id: user.id }).select('feature', 'capability');
 
     const tokenPayload = {
@@ -114,7 +113,7 @@ export const login = async (req, res) => {
         id: user.id,
         email: user.email,
         full_name: user.full_name,
-        is_admin: !!crmProfile?.is_admin,
+        is_admin: isCrmAdmin(user, crmProfile),
         department: crmProfile?.department ?? null,
       },
       permissions: permissionRows,
@@ -161,13 +160,15 @@ export const refreshTokenEndpoint = async (req, res) => {
     const user = await db('ups_users')
       .where({ id: payload.id, email: payload.email, is_deleted: 'No' })
       .first('id', 'status', 'user_type');
-    if (!user || Number(user.user_type) !== CRM_STAFF_USER_TYPE) {
+    if (!user) {
       await db('ups_user_token').where({ id: dbToken.id }).update({ revoked_at: new Date() });
       return res.status(401).json({ status: false, msg: 'User not found. Please login again.', requireLogin: true });
     }
-    if (['Blocked', 'Disabled'].includes(user.status)) {
+    const crmProfile = await db('crm_users').where({ user_id: user.id }).first('id', 'is_admin');
+    const access = checkCrmAccess(user, crmProfile);
+    if (!access.ok) {
       await db('ups_user_token').where({ id: dbToken.id }).update({ revoked_at: new Date() });
-      return res.status(403).json({ status: false, msg: 'This account has been disabled.', requireLogin: true });
+      return res.status(403).json({ status: false, msg: access.msg, requireLogin: true });
     }
 
     // Still comfortably valid — hand back the existing access token rather than rotating early.

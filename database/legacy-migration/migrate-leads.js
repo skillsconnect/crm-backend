@@ -8,11 +8,47 @@
  * additionally guards row-by-row so it can pick up where it left off.
  *
  * Does NOT copy physical uploaded files (business cards, lead attachments) —
- * only DB rows/metadata. Run with: node database/legacy-migration/migrate-leads.js
+ * only DB rows/metadata.
+ *
+ * Run with:   node database/legacy-migration/migrate-leads.js
+ * Preview:    node database/legacy-migration/migrate-leads.js --dry-run
+ *             (staff phase only: prints what would be created/linked, writes nothing)
+ *
+ * The staff phase creates CRM accounts for legacy staff that don't exist yet
+ * and writes their one-time random passwords to a CSV OUTSIDE the repo
+ * (os temp dir, or LEGACY_STAFF_CREDENTIALS_OUT). Distribute it securely,
+ * then delete it — staff change the password from Profile after first login.
+ *
+ * Existing SkillsConnect operations accounts (user_type 3) of active legacy
+ * staff are CONVERTED to CRM staff (user_type 23), which removes their
+ * SkillsConnect operations access. Each conversion is recorded in a revert
+ * CSV next to the credentials file (id, email, previous user_type).
  */
 import 'dotenv/config';
+import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import mysql2 from 'mysql2/promise';
 import db from '../../config/knex.js';
+import { USER_TYPE } from '../../helpers/V1/crmAccess.js';
+
+const DRY_RUN = process.argv.includes('--dry-run');
+const MIGRATION_ACTOR_ID = 1; // ups_users.id recorded as created_by/updated_by
+const RUN_STAMP = Date.now();
+const CREDENTIALS_FILE = process.env.LEGACY_STAFF_CREDENTIALS_OUT
+    || path.join(os.tmpdir(), `crm-legacy-staff-credentials-${RUN_STAMP}.csv`);
+const CONVERSIONS_FILE = path.join(path.dirname(CREDENTIALS_FILE), `crm-legacy-staff-type-conversions-${RUN_STAMP}.csv`);
+
+// Account types the staff phase will onboard: superadmin/admin keep their type,
+// operations is converted to CRM staff, CRM staff is used as-is.
+const ONBOARDABLE_TYPES = [USER_TYPE.SUPERADMIN, USER_TYPE.ADMIN, USER_TYPE.OPERATIONS, USER_TYPE.CRM_STAFF];
+
+// Legacy tblstaff email -> the email of the SAME person's account in
+// skillsconnect_saas, where the two differ. Keys/values are lowercase.
+const LEGACY_EMAIL_ALIASES = new Map([
+    ['vinayak.skillsconnect@gmail.com', 'vinayak.skillsconnect+1@gmail.com'],
+]);
 
 const LEGACY_DB = {
     host: 'localhost',
@@ -124,21 +160,257 @@ async function migrateSources(legacy) {
     return mapLegacyByName(legacyRows, destRows);
 }
 
-// Maps legacy tblstaff.staffid -> ups_users.id via matching email. Staff with
-// no matching ups_users account (most of them, per earlier audit) fall back
-// to 0, meaning "legacy owner, no linked account in this system".
-async function loadStaffMap(legacy) {
-    const [staffRows] = await legacy.query('SELECT staffid, email FROM tblstaff');
-    const emails = staffRows.map((r) => r.email).filter(Boolean);
-    const upsUsers = emails.length ? await db('ups_users').whereIn('email', emails).select('id', 'email') : [];
-    const upsByEmail = new Map(upsUsers.map((u) => [u.email.toLowerCase(), u.id]));
+const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
+
+// 16 random bytes + one char of each class so it also satisfies the
+// Profile page's password policy. Never logged — only written to the CSV.
+const generatePassword = () => `${crypto.randomBytes(16).toString('base64url')}aA1!`;
+
+const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+
+// When one email has several live ups_users rows, prefer an account the
+// staff phase can onboard, then the oldest — deterministic across re-runs.
+const pickAccount = (accounts) => [...accounts].sort((a, b) => {
+    const aOk = ONBOARDABLE_TYPES.includes(Number(a.user_type)) ? 0 : 1;
+    const bOk = ONBOARDABLE_TYPES.includes(Number(b.user_type)) ? 0 : 1;
+    return aOk - bOk || a.id - b.id;
+})[0];
+
+const resolveEmail = (raw) => {
+    const email = raw?.trim();
+    if (!email) return null;
+    return LEGACY_EMAIL_ALIASES.get(email.toLowerCase()) || email;
+};
+
+// Decides, per legacy tblstaff row, what the staff phase will do. Pure read —
+// shared by --dry-run and the real run so the preview is exactly what applies.
+//
+//   no email                          -> unmapped (0)
+//   no live ups_users account         -> create ups_admin_users + ups_users
+//                                        (user_type 23) + crm_users
+//   inactive in legacy, no crm_users  -> link leads only; account untouched
+//   type 3 (operations)               -> convert to type 23 + crm_users
+//   type 1/2 (superadmin/admin), 23   -> keep type; add crm_users if missing
+//   any other type                    -> link leads, grant NO CRM access
+async function planStaff(legacy) {
+    const [staffRows] = await legacy.query(
+        'SELECT staffid, email, firstname, lastname, phonenumber, admin, active FROM tblstaff ORDER BY staffid ASC'
+    );
+
+    const emails = [...new Set(staffRows.map((r) => resolveEmail(r.email)).filter(Boolean))];
+    const accounts = emails.length
+        ? await db('ups_users').whereIn('email', emails).where('is_deleted', 'No')
+            .select('id', 'email', 'user_type', 'status')
+        : [];
+    const accountsByEmail = new Map();
+    for (const a of accounts) {
+        const key = a.email.toLowerCase();
+        accountsByEmail.set(key, [...(accountsByEmail.get(key) || []), a]);
+    }
+
+    const userIds = accounts.map((a) => a.id);
+    const crmRows = userIds.length
+        ? await db('crm_users').whereIn('user_id', userIds).select('user_id', 'legacy_staff_id')
+        : [];
+    const crmByUserId = new Map(crmRows.map((r) => [r.user_id, r]));
+
+    const plan = [];
+    const plannedCreates = new Set(); // same email twice in tblstaff -> create once
+    for (const row of staffRows) {
+        const email = resolveEmail(row.email);
+        const aliased = email && email.toLowerCase() !== row.email.trim().toLowerCase();
+        const base = {
+            staff: row, email, legacyEmail: aliased ? row.email.trim() : null,
+            active: toBool(row.active), legacyAdmin: toBool(row.admin),
+        };
+
+        if (!email) { plan.push({ ...base, action: 'no_email' }); continue; }
+
+        const candidates = accountsByEmail.get(email.toLowerCase());
+        if (!candidates) {
+            const key = email.toLowerCase();
+            plan.push({ ...base, action: plannedCreates.has(key) ? 'link_created' : 'create' });
+            plannedCreates.add(key);
+            continue;
+        }
+
+        const account = pickAccount(candidates);
+        const crmUser = crmByUserId.get(account.id) || null;
+        const ctx = { ...base, account, crmUser, duplicates: candidates.length };
+        const type = Number(account.user_type);
+        if (!ONBOARDABLE_TYPES.includes(type)) {
+            plan.push({ ...ctx, action: 'link_no_access_wrong_type' });
+        } else if (!base.active && !crmUser) {
+            // Left the legacy CRM: don't convert (that would strip their
+            // SkillsConnect access) and don't grant CRM access.
+            plan.push({ ...ctx, action: 'link_no_access_inactive' });
+        } else if (type === USER_TYPE.OPERATIONS) {
+            plan.push({ ...ctx, action: 'convert' });
+        } else if (crmUser) {
+            plan.push({ ...ctx, action: 'link_existing_crm' });
+        } else {
+            plan.push({ ...ctx, action: 'onboard' });
+        }
+    }
+    return plan;
+}
+
+const ACTION_LABELS = {
+    create: 'create new CRM account',
+    convert: 'operations account → convert to CRM staff (type 23) + CRM access',
+    onboard: 'existing account → grant CRM access (type unchanged)',
+    link_existing_crm: 'already CRM user → link only',
+    link_created: 'duplicate legacy email → link to account created above',
+    link_no_access_inactive: 'inactive in legacy → link leads, no CRM access',
+    link_no_access_wrong_type: 'non-CRM account type → link leads, no CRM access',
+    no_email: 'no email → cannot map (0)',
+};
+
+function printStaffPlan(plan) {
+    console.log('\n👥 Staff plan:');
+    for (const p of plan) {
+        const acct = p.account ? ` [ups_users#${p.account.id} type ${p.account.user_type}${p.account.user_type === USER_TYPE.SUPERADMIN ? ' superadmin → CRM admin' : ''}]` : '';
+        const dup = p.duplicates > 1 ? ` (⚠ ${p.duplicates} live accounts share this email)` : '';
+        const state = p.active ? '' : ' (inactive)';
+        const alias = p.legacyEmail ? ` (legacy email ${p.legacyEmail})` : '';
+        const willAccess = ['create', 'convert', 'onboard', 'link_existing_crm'].includes(p.action);
+        const blocked = willAccess && p.account && p.account.status !== 'Active'
+            ? ` (⚠ SkillsConnect status ${p.account.status} — cannot log in until activated)` : '';
+        console.log(`   #${p.staff.staffid} ${p.email || '—'}${alias}${state}: ${ACTION_LABELS[p.action]}${acct}${dup}${blocked}`);
+    }
+    const counts = plan.reduce((acc, p) => ({ ...acc, [p.action]: (acc[p.action] || 0) + 1 }), {});
+    console.log(`   Totals: ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(', ')}\n`);
+}
+
+async function createStaffAccount(trx, p, password) {
+    const firstName = p.staff.firstname?.trim() || p.email.split('@')[0];
+    const lastName = p.staff.lastname?.trim() || '';
+    const mobile = p.staff.phonenumber?.trim() || null;
+    const audit = { created_by: MIGRATION_ACTOR_ID, updated_by: MIGRATION_ACTOR_ID };
+
+    // Same shape as accounts created from the SkillsConnect admin panel:
+    // ups_users.frecord_id points at the ups_admin_users profile row.
+    const [profileId] = await trx('ups_admin_users').insert({
+        first_name: firstName, last_name: lastName, email: p.email, mobile, whatsapp_number: mobile, ...audit,
+    });
+    const [userId] = await trx('ups_users').insert({
+        frecord_id: profileId,
+        user_type: USER_TYPE.CRM_STAFF,
+        company_id: 0,
+        first_name: firstName,
+        last_name: lastName,
+        full_name: `${firstName} ${lastName}`.trim(),
+        email: p.email,
+        password: md5(password),
+        mobile,
+        whatsapp_number: mobile,
+        // Legacy-inactive staff still get an account so their leads keep a
+        // real owner, but In-active blocks CRM login (crmAccess requires Active).
+        status: p.active ? 'Active' : 'In-active',
+        register_via: 'legacy-crm-migration',
+        ...audit,
+    });
+    await trx('crm_users').insert({
+        user_id: userId, legacy_staff_id: p.staff.staffid, is_admin: p.legacyAdmin, ...audit,
+    });
+    return userId;
+}
+
+// Returns the legacy tblstaff.staffid -> ups_users.id map every later phase
+// uses. After this phase every legacy staff member with an email maps to a
+// real account, so lead owners are correct on the first run.
+async function migrateStaff(legacy) {
+    const plan = await planStaff(legacy);
+    printStaffPlan(plan);
 
     const map = new Map();
-    for (const row of staffRows) {
-        const upsId = row.email ? upsByEmail.get(row.email.toLowerCase()) : undefined;
-        map.set(row.staffid, upsId || 0);
+    const createdByEmail = new Map();
+    const credentials = [];
+    const conversions = [];
+
+    for (const p of plan) {
+        const sid = p.staff.staffid;
+        switch (p.action) {
+            case 'no_email':
+                map.set(sid, 0);
+                break;
+            case 'create': {
+                const password = generatePassword();
+                const userId = await db.transaction((trx) => createStaffAccount(trx, p, password));
+                createdByEmail.set(p.email.toLowerCase(), userId);
+                map.set(sid, userId);
+                // Inactive accounts can't log in, so there's nothing to hand out.
+                if (p.active) credentials.push({ email: p.email, name: `${p.staff.firstname || ''} ${p.staff.lastname || ''}`.trim(), password });
+                break;
+            }
+            case 'link_created':
+                map.set(sid, createdByEmail.get(p.email.toLowerCase()) || 0);
+                break;
+            case 'convert':
+                // Type change + CRM row in one transaction so a failure can't
+                // leave an operations user stripped of access but not onboarded.
+                await db.transaction(async (trx) => {
+                    await trx('ups_users').where({ id: p.account.id, user_type: USER_TYPE.OPERATIONS })
+                        .update({ user_type: USER_TYPE.CRM_STAFF, updated_by: MIGRATION_ACTOR_ID });
+                    if (p.crmUser) {
+                        if (!p.crmUser.legacy_staff_id) {
+                            await trx('crm_users').where('user_id', p.account.id).update({ legacy_staff_id: sid });
+                        }
+                    } else {
+                        await trx('crm_users').insert({
+                            user_id: p.account.id,
+                            legacy_staff_id: sid,
+                            is_admin: p.legacyAdmin,
+                            created_by: MIGRATION_ACTOR_ID,
+                            updated_by: MIGRATION_ACTOR_ID,
+                        });
+                    }
+                });
+                conversions.push({ id: p.account.id, email: p.email, previous_user_type: p.account.user_type });
+                map.set(sid, p.account.id);
+                break;
+            case 'onboard':
+                await db('crm_users').insert({
+                    user_id: p.account.id,
+                    legacy_staff_id: sid,
+                    is_admin: p.legacyAdmin, // superadmins are admins regardless — derived live from user_type
+                    created_by: MIGRATION_ACTOR_ID,
+                    updated_by: MIGRATION_ACTOR_ID,
+                }).onConflict('user_id').ignore();
+                map.set(sid, p.account.id);
+                break;
+            case 'link_existing_crm':
+                // Never overwrite is_admin/role on an existing CRM user — it may
+                // have been changed by hand since. Only fill in traceability.
+                if (!p.crmUser.legacy_staff_id) {
+                    await db('crm_users').where('user_id', p.account.id).update({ legacy_staff_id: sid });
+                }
+                map.set(sid, p.account.id);
+                break;
+            default: // link_no_access_inactive, link_no_access_wrong_type
+                map.set(sid, p.account.id);
+        }
     }
-    console.log(`ℹ️  Staff mapping: ${[...map.values()].filter((v) => v > 0).length}/${staffRows.length} legacy staff linked to ups_users accounts`);
+
+    if (credentials.length) {
+        const csv = ['email,name,temporary_password', ...credentials.map((c) => [c.email, c.name, c.password].map(csvCell).join(','))].join('\n');
+        fs.writeFileSync(CREDENTIALS_FILE, `${csv}\n`, { mode: 0o600 });
+        console.log(`🔑 ${credentials.length} temporary passwords written to ${CREDENTIALS_FILE}`);
+        console.log('   Share them securely, ask staff to change them after first login, then DELETE this file.');
+    }
+
+    if (conversions.length) {
+        const csv = ['ups_user_id,email,previous_user_type', ...conversions.map((c) => [c.id, c.email, c.previous_user_type].map(csvCell).join(','))].join('\n');
+        fs.writeFileSync(CONVERSIONS_FILE, `${csv}\n`);
+        console.log(`🔁 ${conversions.length} operations accounts converted to CRM staff — revert list: ${CONVERSIONS_FILE}`);
+    }
+
+    const wrongType = plan.filter((p) => p.action === 'link_no_access_wrong_type');
+    for (const p of wrongType) {
+        console.warn(`⚠️  ${p.email} is a SkillsConnect user_type ${p.account.user_type} account — leads linked, but it cannot log into the CRM.`);
+    }
+
+    console.log(`ℹ️  Staff mapping: ${[...map.values()].filter((v) => v > 0).length}/${plan.length} legacy staff linked to ups_users accounts`);
     return map;
 }
 
@@ -362,7 +634,13 @@ async function main() {
     const legacy = await mysql2.createConnection(LEGACY_DB);
 
     try {
-        const staffMap = await loadStaffMap(legacy);
+        if (DRY_RUN) {
+            console.log('🔍 Dry run — staff phase preview only, nothing will be written');
+            printStaffPlan(await planStaff(legacy));
+            return;
+        }
+
+        const staffMap = await migrateStaff(legacy);
         const statusMap = await migrateStatuses(legacy);
         const sourceMap = await migrateSources(legacy);
         const leadIdMap = await migrateLeads(legacy, statusMap, sourceMap, staffMap);
