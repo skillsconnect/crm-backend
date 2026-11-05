@@ -31,6 +31,7 @@ import {
     deleteLead,
     bulkActionLeads,
     addLeadNote,
+    updateLeadNote,
     deleteLeadNote,
     addLeadActivity,
     getLeadReminders,
@@ -209,6 +210,7 @@ router.delete('/:id', del, ownLead, deleteLead);
 router.patch('/:id/status', edit, ownLead, updateLeadKanbanStatus);
 router.post('/:id/activity', edit, ownLead, addLeadActivity);
 router.post('/:id/notes', edit, ownLead, addLeadNote);
+router.put('/:id/notes/:noteId', edit, ownLead, updateLeadNote);
 router.delete('/:id/notes/:noteId', edit, ownLead, deleteLeadNote);
 router.get('/:id/reminders', view, ownLead, getLeadReminders);
 router.post('/:id/reminders', edit, ownLead, addLeadReminder);
