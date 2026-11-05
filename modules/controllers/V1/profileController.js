@@ -32,7 +32,7 @@ export const getMyProfile = async (req, res) => {
             success: true,
             data: {
                 ...user,
-                is_admin: Boolean(crmProfile?.is_admin),
+                is_admin: Boolean(req.user.is_admin), // effective value from Authenticate (includes platform superadmin)
                 department: crmProfile?.department || '',
                 designation: crmProfile?.designation || '',
                 profile_image: crmProfile?.profile_image || user.image_name || '',
