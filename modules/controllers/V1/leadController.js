@@ -8,6 +8,7 @@ import { uploadToAzureBlob, getAzureBlobStream, deleteBlobByUrl } from '../../..
 import { notifyUser } from '../../../services/notificationService.js';
 import { hasGlobalLeadView, scopeLeadsForUser } from '../../../helpers/V1/leadAccess.js';
 import { resolveLocation } from '../../../helpers/V1/locationResolver.js';
+import { formatLeadActivityText } from '../../../helpers/V1/leadActivityText.js';
 
 const TABLES = {
     LEADS: 'crm_leads',
@@ -784,9 +785,9 @@ export const getLeadById = async (req, res) => {
         const lead = await withLeadJoins(db(`${TABLES.LEADS} as l`)).where('l.id', id).select(leadSelectColumns).first();
         if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
 
-        const notes = await db(TABLES.NOTES).where('lead_id', id).orderBy('dateadded', 'desc');
-        const activity = await db(TABLES.ACTIVITY).where('lead_id', id).orderBy('date', 'desc');
-        const reminders = await db(TABLES.REMINDERS).where('lead_id', id).orderBy('date', 'asc');
+        const notes = await selectLeadNotes().where('n.lead_id', id).orderBy('n.dateadded', 'desc');
+        const activity = await selectLeadActivity(id);
+        const reminders = await selectLeadReminders().where('r.lead_id', id).orderBy('r.date', 'asc');
         const attachments = await db(TABLES.ATTACHMENTS).where('lead_id', id).orderBy('dateadded', 'desc');
         const audioNotes = await db(TABLES.AUDIO_NOTES).where('lead_id', id).orderBy('dateadded', 'desc');
         const process = await db(TABLES.PROCESS_STAFF).where('lead_id', id).orderBy('id', 'desc').first();
@@ -1087,12 +1088,34 @@ export const bulkActionLeads = async (req, res) => {
     }
 };
 
+// Activity rows with the author's avatar and a readable `text` (legacy rows
+// store a language key + serialized args in description/additional_data).
+const selectLeadActivity = (leadId) => db(`${TABLES.ACTIVITY} as a`)
+    .leftJoin(`${TABLES.USERS} as au`, 'au.id', 'a.staffid')
+    .leftJoin(`${TABLES.CRM_USERS} as acu`, 'acu.user_id', 'a.staffid')
+    .select('a.*', db.raw("COALESCE(NULLIF(acu.profile_image, ''), au.image_name) as staff_image"))
+    .where('a.lead_id', leadId)
+    .orderBy('a.date', 'desc')
+    .orderBy('a.id', 'desc')
+    .then((rows) => rows.map((row) => ({ ...row, text: formatLeadActivityText(row) })));
+
 // ==================== LEAD NOTES ====================
+
+// Notes come back with the author's name and avatar so the drawer can show
+// who wrote each one (like the legacy CRM did).
+const selectLeadNotes = () => db(`${TABLES.NOTES} as n`)
+    .leftJoin(`${TABLES.USERS} as nu`, 'nu.id', 'n.addedfrom')
+    .leftJoin(`${TABLES.CRM_USERS} as ncu`, 'ncu.user_id', 'n.addedfrom')
+    .select(
+        'n.*',
+        db.raw("COALESCE(NULLIF(TRIM(nu.full_name), ''), TRIM(CONCAT(COALESCE(nu.first_name, ''), ' ', COALESCE(nu.last_name, '')))) as added_by_name"),
+        db.raw("COALESCE(NULLIF(ncu.profile_image, ''), nu.image_name) as added_by_image"),
+    );
 
 export const addLeadNote = async (req, res) => {
     try {
         const { id } = req.params;
-        const { description } = req.body;
+        const { description, contacted, date_contacted } = req.body;
         if (!description || !description.trim()) {
             return res.status(400).json({ success: false, message: "Note description is required" });
         }
@@ -1100,16 +1123,51 @@ export const addLeadNote = async (req, res) => {
         const existing = await db(TABLES.LEADS).where('id', id).first();
         if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
 
+        // "I got in touch with this lead" records when contact happened (defaults
+        // to now) and bumps the lead's last-contact; "I have not contacted" leaves
+        // both untouched.
+        const gotInTouch = contacted === true || contacted === 'true' || contacted === 1 || contacted === '1';
+        let contactedAt = null;
+        if (gotInTouch) {
+            contactedAt = date_contacted ? new Date(date_contacted) : new Date();
+            if (Number.isNaN(contactedAt.getTime())) {
+                return res.status(400).json({ success: false, message: "Invalid contact date" });
+            }
+        }
+
         const [insertedId] = await db(TABLES.NOTES).insert({
             lead_id: id,
             description: description.trim(),
-            date_contacted: new Date(),
+            date_contacted: contactedAt,
             addedfrom: currentUserId(req),
             dateadded: new Date(),
         });
 
-        const newNote = await db(TABLES.NOTES).where('id', insertedId).first();
+        if (contactedAt) {
+            await db(TABLES.LEADS).where('id', id).update({ lastcontact: contactedAt });
+        }
+
+        const newNote = await selectLeadNotes().where('n.id', insertedId).first();
         res.status(201).json({ success: true, message: "Note added successfully", data: newNote });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+export const updateLeadNote = async (req, res) => {
+    try {
+        const { id, noteId } = req.params;
+        const description = String(req.body?.description || '').trim();
+        if (!description) {
+            return res.status(400).json({ success: false, message: "Note description is required" });
+        }
+
+        const updated = await db(TABLES.NOTES).where({ id: noteId, lead_id: id }).update({ description });
+        if (!updated) return res.status(404).json({ success: false, message: "Note not found" });
+
+        const note = await selectLeadNotes().where('n.id', noteId).first();
+        res.status(200).json({ success: true, message: "Note updated successfully", data: note });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({ success: false, message: "Internal Server Error" });
@@ -1142,7 +1200,7 @@ export const addLeadActivity = async (req, res) => {
         if (!existing) return res.status(404).json({ success: false, message: "Lead not found" });
 
         await logActivity(id, activity.trim(), req);
-        const activityRows = await db(TABLES.ACTIVITY).where('lead_id', id).orderBy('date', 'desc');
+        const activityRows = await selectLeadActivity(id);
         res.status(201).json({ success: true, message: "Activity logged successfully", data: activityRows[0] });
     } catch (error) {
         console.error('Error:', error);
@@ -1152,10 +1210,20 @@ export const addLeadActivity = async (req, res) => {
 
 // ==================== LEAD REMINDERS ====================
 
+// Reminders with the name/avatar of the staff member being reminded.
+const selectLeadReminders = () => db(`${TABLES.REMINDERS} as r`)
+    .leftJoin(`${TABLES.USERS} as ru`, 'ru.id', 'r.staff')
+    .leftJoin(`${TABLES.CRM_USERS} as rcu`, 'rcu.user_id', 'r.staff')
+    .select(
+        'r.*',
+        db.raw("COALESCE(NULLIF(TRIM(ru.full_name), ''), TRIM(CONCAT(COALESCE(ru.first_name, ''), ' ', COALESCE(ru.last_name, '')))) as staff_name"),
+        db.raw("COALESCE(NULLIF(rcu.profile_image, ''), ru.image_name) as staff_image"),
+    );
+
 export const getLeadReminders = async (req, res) => {
     try {
         const { id } = req.params;
-        const reminders = await db(TABLES.REMINDERS).where('lead_id', id).orderBy('date', 'asc');
+        const reminders = await selectLeadReminders().where('r.lead_id', id).orderBy('r.date', 'asc');
         res.status(200).json({ success: true, data: reminders || [] });
     } catch (error) {
         console.error('Error:', error);
@@ -1180,7 +1248,7 @@ export const addLeadReminder = async (req, res) => {
             creator: currentUserId(req),
         });
 
-        const newReminder = await db(TABLES.REMINDERS).where('id', insertedId).first();
+        const newReminder = await selectLeadReminders().where('r.id', insertedId).first();
         res.status(201).json({ success: true, message: "Reminder created successfully", data: newReminder });
     } catch (error) {
         console.error('Error:', error);
@@ -1202,7 +1270,7 @@ export const updateLeadReminder = async (req, res) => {
         if (isnotified !== undefined) updateData.isnotified = Boolean(Number(isnotified));
 
         await db(TABLES.REMINDERS).where('id', reminderId).update(updateData);
-        const updatedReminder = await db(TABLES.REMINDERS).where('id', reminderId).first();
+        const updatedReminder = await selectLeadReminders().where('r.id', reminderId).first();
         res.status(200).json({ success: true, message: "Reminder updated successfully", data: updatedReminder });
     } catch (error) {
         console.error('Error:', error);
