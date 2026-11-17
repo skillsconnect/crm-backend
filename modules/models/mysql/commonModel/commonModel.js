@@ -2,7 +2,10 @@
 import db from '../../../../config/knex.js';
 
 const CommonModel = {
-  // Generic SELECT with optional conditions, ordering, grouping, and having
+  // Generic SELECT with optional conditions, ordering, grouping, and having.
+  // `condition` may embed `?` placeholders resolved from `bindings` — always
+  // prefer that over interpolating request-controlled values into the string
+  // directly (whereRaw with no bindings executes the SQL as-is).
   async getData(
     table,
     select = "*",
@@ -11,13 +14,14 @@ const CommonModel = {
     order = "",
     groupBy = "",
     having = "",
-    trx = null
+    trx = null,
+    bindings = []
   ) {
     const knex = trx || db;
     let query = knex(table).select(knex.raw(select));
 
     if (condition) {
-      query = query.whereRaw(condition);
+      query = query.whereRaw(condition, bindings);
     }
 
     if (orderBy && order) {
@@ -280,15 +284,16 @@ const CommonModel = {
   },
 
   /**
-   * updateData returns true if rows affected > 0 (keeps parity with your previous impl)
+   * updateData returns true if rows affected > 0 (keeps parity with your previous impl).
+   * `condition` may embed `?` placeholders resolved from `bindings`.
    */
-  async updateData(table, data, condition, trx = null) {
+  async updateData(table, data, condition, trx = null, bindings = []) {
     const knex = trx || db;
-    const updated = await knex(table).whereRaw(condition).update(data);
+    const updated = await knex(table).whereRaw(condition, bindings).update(data);
     return updated > 0;
   },
 
-  async deleteRecord(table, condition, trx = null) {
+  async deleteRecord(table, condition, trx = null, bindings = []) {
     const knex = trx || db;
     try {
       // ensure table exists before attempting delete to avoid ER_NO_SUCH_TABLE
@@ -302,7 +307,7 @@ const CommonModel = {
       console.warn(`deleteRecord: table existence check failed for ${table}:`, err);
     }
 
-    const deleted = await knex(table).whereRaw(condition).del();
+    const deleted = await knex(table).whereRaw(condition, bindings).del();
     return deleted > 0;
   },
 

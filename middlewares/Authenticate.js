@@ -1,13 +1,8 @@
 import jwt from "jsonwebtoken";
-const VERSION = process.env.WEBSITE_VERSION;
-
-// import userModel from "../Models_old/Users/UsersModel.js";
-const { default: userModel } = await import(
-  `../Modules/Models/Website/MySQL/${VERSION}/Users/UsersModel.js`
-);
+import { checkCrmAccess, isCrmAdmin } from "../helpers/V1/crmAccess.js";
 
 const { default: commonModel } = await import(
-  `../Modules/Models/Website/MySQL/commonModel/commonModel.js`
+  `../modules/models/mysql/commonModel/commonModel.js`
 );
 
 
@@ -76,7 +71,27 @@ const authenticate = (opts = {}) => async (req, res, next) => {
       }
 
       const user = userResult[0];
-      
+
+      // CRM access is re-checked on every request (not just at login) so that
+      // removing a crm_users row, deactivating the account or changing its
+      // user_type in SkillsConnect cuts off an already-issued token at once.
+      // is_admin bypasses all crm_staff_permissions checks
+      // (see middlewares/requirePermission.js).
+      const crmUserResult = await commonModel.getData(
+        "crm_users",
+        "is_admin, role_id, department, designation",
+        `user_id = ${user.id}`
+      );
+      const crmUser = crmUserResult ? crmUserResult[0] : null;
+      const access = checkCrmAccess(user, crmUser);
+      if (!access.ok) {
+        return res.status(403).json({ error: access.msg, requireLogin: true });
+      }
+      user.is_admin = isCrmAdmin(user, crmUser);
+      user.crm_role_id = crmUser?.role_id ?? null;
+      user.department = crmUser?.department ?? null;
+      user.designation = crmUser?.designation ?? null;
+
       enrichedPayload.permissions = payload.permissions;
       enrichedPayload.user_type = user.user_type;
 

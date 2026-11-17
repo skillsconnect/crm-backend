@@ -8,7 +8,10 @@ import http from 'http';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import { setupWebSocket } from './helpers/V1/websocket.js';
+import { startDemoReminderScheduler } from './services/demoReminderScheduler.js';
+import { startRecurringInvoiceScheduler } from './services/recurringInvoiceService.js';
 const { consumerSendMailLog ,consumerExcelToExport  } = await import(`./rabbitmq/consumer.js`);
+const { QUEUES } = await import(`./rabbitmq/queues.js`);
 
 const Website_ver = process.env.WEBSITE_VERSION;
 
@@ -28,9 +31,9 @@ const PORT = process.env.PORT || 6004;
 
 // CORS config
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002','http://192.168.1.33:3001'],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
@@ -82,11 +85,11 @@ app.get('/', (req, res) => {
 // for send mail log
 // setTimeout(async () => {
   // for send mail log
-consumerSendMailLog("send_email_log_queue", "notifications_exchange", "email_log_notification");
+consumerSendMailLog(QUEUES.EMAIL_LOG, "notifications_exchange", "email_log_notification");
 // send mail instant log
-consumerSendMailLog("send_email_instant_log_queue", "notifications_exchange", "email_instant_log_notification");
+consumerSendMailLog(QUEUES.EMAIL_INSTANT_LOG, "notifications_exchange", "email_instant_log_notification");
 // send mail excel to export
-consumerExcelToExport("send_email_excel_export_queue", "notifications_exchange", "excel_export_notification");
+consumerExcelToExport(QUEUES.EMAIL_EXCEL_EXPORT, "notifications_exchange", "excel_export_notification");
 // }, 2000);
 
 app.use("/crm", CRMRoutes);
@@ -94,6 +97,15 @@ app.use("/crm", CRMRoutes);
 // WebSocket + HTTP server
 const server = http.createServer(app);
 setupWebSocket(server);
+
+// Runs in-process so it shares the live WebSocket connection map above —
+// see services/demoReminderScheduler.js for why this can't be a standalone
+// cron script like the ones in cron/.
+startDemoReminderScheduler();
+
+// Doesn't need the WS map, but kept in-process for simplicity — no separate
+// cron infra to set up locally, and generation is idempotent/cheap to poll.
+startRecurringInvoiceScheduler();
 
 // Start server
 server.listen(PORT, () => {

@@ -27,10 +27,38 @@ const loadRouter = async (name) => {
 const login = await loadRouter('login');
 const leads = await loadRouter('leads');
 const email_campaign = await loadRouter('email-campaign')
+const processRouter = await loadRouter('processs')
+const internal = await loadRouter('internal')
+const masterData = await loadRouter('masterData')
+const profile = await loadRouter('profile')
+const clients = await loadRouter('clients')
+const proposals = await loadRouter('proposals')
+const invoices = await loadRouter('invoices')
+const creditNotes = await loadRouter('creditNotes')
+const demos = await loadRouter('demos')
+const dashboard = await loadRouter('dashboard')
+const staff = await loadRouter('staff')
+const roles = await loadRouter('roles')
+const notifications = await loadRouter('notifications')
+const publicRoutes = await loadRouter('public')
 
-// route 
+// route
 router.use("/auth", login);
 router.use("/leads", leads)
 router.use("/email-campaign", email_campaign)
+router.use("/process", processRouter)
+router.use("/internal", internal)
+router.use("/master-data", masterData)
+router.use("/profile", profile)
+router.use("/clients", clients)
+router.use("/proposals", proposals)
+router.use("/invoices", invoices)
+router.use("/credit-notes", creditNotes)
+router.use("/demos", demos)
+router.use("/dashboard", dashboard)
+router.use("/staff", staff)
+router.use("/roles", roles)
+router.use("/notifications", notifications)
+router.use("/public", publicRoutes)
 
 export default router;

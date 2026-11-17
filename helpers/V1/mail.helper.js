@@ -8,6 +8,7 @@ const { default: commonModel } = await import(
 
 );
 const { producerMessage } = await import(`../../rabbitmq/producer.js`);
+const { QUEUES } = await import(`../../rabbitmq/queues.js`);
 
 const provider = 'brevo';
 // const provider = 'zepto';
@@ -131,12 +132,12 @@ async function sendMailViaZepto({ emailFrom, emailTo, emailCc, subject, mailBody
     if (tableName === "ups_email_logs") {
       const insertData = await commonModel.insertData("ups_email_logs", logData);
       const message = { id: insertData, tableName: tableName, action: "sendMailFromLogTable", sendVia: "ZeptoMail", emailData: payload };
-      producerMessage(message, "send_email_log_queue", "notifications_exchange", "email_log_notification");
+      producerMessage(message, QUEUES.EMAIL_LOG, "notifications_exchange", "email_log_notification");
 
     } else if (tableName === "ups_instant_email_logs") {
       const insertData = await commonModel.insertData("ups_instant_email_logs", logData);
       const message = { id: insertData, tableName: tableName, action: "sendMailFromLogTable", sendVia: "ZeptoMail", emailData: payload };
-      producerMessage(message, "send_email_instant_log_queue", "notifications_exchange", "email_instant_log_notification");
+      producerMessage(message, QUEUES.EMAIL_INSTANT_LOG, "notifications_exchange", "email_instant_log_notification");
 
     }
     return true;
@@ -185,12 +186,12 @@ async function sendMailViaBrevo({ emailFrom, emailTo, emailCc, subject, mailBody
     if (tableName === "ups_email_logs") {
       const insertData = await commonModel.insertData("ups_email_logs", logData);
       const message = { id: insertData, tableName: tableName, action: "sendMailFromLogTable", sendVia: "Brevo", emailData: postData };
-      producerMessage(message, "send_email_log_queue", "notifications_exchange", "email_log_notification");
+      producerMessage(message, QUEUES.EMAIL_LOG, "notifications_exchange", "email_log_notification");
 
     } else if (tableName === "ups_instant_email_logs") {
       const insertData = await commonModel.insertData("ups_instant_email_logs", logData);
       const message = { id: insertData, tableName: tableName, action: "sendMailFromLogTable", sendVia: "Brevo", emailData: postData };
-      producerMessage(message, "send_email_instant_log_queue", "notifications_exchange", "email_instant_log_notification");
+      producerMessage(message, QUEUES.EMAIL_INSTANT_LOG, "notifications_exchange", "email_instant_log_notification");
 
     }
     return true;
